@@ -735,7 +735,10 @@ function syncCareFinance(care, clientId, opts={}){
   record.category = care.projectType || '护理';
   record.project = care.projectType || '护理';
   record.clientId = clientId || care.clientId || '';
+  const client = DB.clients.find(x=>x.id===record.clientId);
   record.clientName = clientDisplayName(record.clientId);
+  record.clientWechat = client ? (client.wechatName || '') : '';
+  record.clientType = client ? (client.clientType || care.clientType || '') : (care.clientType || '');
   record.paymentMethod = care.payMethod || '微信';
   record.note = care.careNote || care.careNote2 || care.nailNote || care.lashNote || care.semiNote || '';
   if(!existing) DB.finances.push(record);
@@ -1652,6 +1655,7 @@ function renderClient(el){
       `<button class="btn btn-outline" onclick="openFollowUpRules()">🔔 回访设置</button>
        <button class="btn btn-outline" onclick="renderBusinessReport()">📊 经营报表中心</button>
        <button class="btn btn-outline" onclick="renderClientAnalysis()">📈 客户分析</button>
+       <button class="btn btn-primary" onclick="openQuickCheckout()">+ 录消费</button>
        <button class="btn btn-primary" onclick="openClient()">+ 新建客户</button>`)}
 
     <!-- V5: 经营仪表盘速览 -->
@@ -2007,6 +2011,102 @@ function saveClient(id){
     closeModal(); render(); toast('客户已保存 ✅');
   } catch(e) {
     console.error('saveClient error:', e);
+    toast('保存失败：'+e.message);
+  }
+}
+function normalizeClientKey(v){
+  return String(v||'').trim().toLowerCase();
+}
+function findClientByNameOrWechat(name, wechatName){
+  const n = normalizeClientKey(name);
+  const w = normalizeClientKey(wechatName);
+  return DB.clients.find(c=>{
+    const cn = normalizeClientKey(c.name);
+    const cw = normalizeClientKey(c.wechatName);
+    return (w && cw && cw===w) || (n && cn && cn===n);
+  }) || null;
+}
+function openQuickCheckout(){
+  const d = todayStr();
+  modal(`
+    ${modalHeader('快速录消费', '录一次，自动进入客户管理 + 门店财务')}
+    ${modalBody(`
+      <div class="space-y-4">
+        <div class="card p-3" style="background:#f0fdf4;border-color:#bbf7d0;">
+          <div class="text-sm font-semibold text-[var(--green)] mb-1">门店收银模式</div>
+          <div class="text-xs text-[var(--text-faint)]">填完顾客和消费信息后，系统会自动建档或更新客户，并同步到今天的门店收入流水。</div>
+        </div>
+        <div class="grid md:grid-cols-2 gap-3">
+          <div><label>日期</label><input class="input" type="date" id="quick-date" value="${d}"></div>
+          <div><label>项目</label><select class="select" id="quick-project">
+            ${PROJECT_TYPES.map(p=>`<option>${p}</option>`).join('')}
+          </select></div>
+          <div><label>顾客姓名</label><input class="input" id="quick-name" placeholder="例如：李小姐"></div>
+          <div><label>微信昵称</label><input class="input" id="quick-wechat" placeholder="例如：Lily"></div>
+          <div><label>是否会员</label><select class="select" id="quick-member">
+            <option value="会员">是，会员</option>
+            <option value="老客">否，普通顾客</option>
+            <option value="新客">新客</option>
+          </select></div>
+          <div><label>支付方式</label><select class="select" id="quick-payMethod">
+            ${PAY_METHODS.map(m=>`<option ${m==='微信'?'selected':''}>${m}</option>`).join('')}
+          </select></div>
+          <div><label>金额</label><input class="input" type="number" id="quick-amount" placeholder="0"></div>
+          <div><label>备注（可选）</label><input class="input" id="quick-note" placeholder="款式、套餐、特殊说明等"></div>
+        </div>
+        <div class="text-xs text-[var(--text-faint)]">提示：如果微信昵称或姓名和已有客户一致，会自动归到原客户名下，不会重复建档。</div>
+      </div>
+    `)}
+    ${modalFooter(`
+      <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveQuickCheckout()">保存并同步</button>
+    `)}
+  `);
+}
+function saveQuickCheckout(){
+  try{
+    const name = val('quick-name');
+    const wechatName = val('quick-wechat');
+    const amount = Number(val('quick-amount'))||0;
+    if(!name && !wechatName){ toast('请填写顾客姓名或微信昵称'); return; }
+    if(amount<=0){ toast('请填写消费金额'); return; }
+    let client = findClientByNameOrWechat(name, wechatName);
+    const isNewClient = !client;
+    if(!client){
+      client = {
+        id: uid(), name:'', wechatName:'', phone:'', birthday:'', age:'', occupation:'', source:'',
+        skinType:'', allergy:'', habits:'', firstDate:val('quick-date')||todayStr(),
+        careCount:0, productPay:0, products:'', nextVisit:'', tags:[], notes:'',
+        clientType:val('quick-member')||'新客', followUpStatus:'待回访', created:new Date().toISOString()
+      };
+      DB.clients.push(client);
+    }
+    if(name) client.name = name;
+    if(wechatName) client.wechatName = wechatName;
+    client.clientType = val('quick-member') || client.clientType || '老客';
+    if(!client.firstDate) client.firstDate = val('quick-date')||todayStr();
+    const projectType = val('quick-project') || '皮肤管理';
+    const care = {
+      id: uid(), clientId: client.id, date: val('quick-date')||todayStr(),
+      clientType: client.clientType, projectType, payment: amount, payMethod: val('quick-payMethod')||'微信',
+      boughtProduct:false, renewCard:false, careNote: val('quick-note')||'',
+      nailStyle:'', nailColor:'', nailNote: projectType==='美甲' ? (val('quick-note')||'') : '',
+      lashStyle:'', lashLength:'', lashCurl:'', lashNote: projectType==='美睫' ? (val('quick-note')||'') : '',
+      skinCondition2:'', careContent: projectType==='皮肤管理'||projectType==='祛痘' ? projectType : '', careNote2: projectType==='皮肤管理'||projectType==='祛痘' ? (val('quick-note')||'') : '',
+      semiPart:'', semiItem:'', semiOpType:'', semiDesign:'', semiColor:'', semiRecovery:'', semiNote: projectType==='半永久' ? (val('quick-note')||'') : '',
+      nextDate:'', created:new Date().toISOString()
+    };
+    DB.cares.push(care);
+    client.careCount = DB.cares.filter(x=>x.clientId===client.id).length;
+    const fuDays = getFollowUpDays(projectType);
+    const fuDate = new Date(care.date);
+    fuDate.setDate(fuDate.getDate()+fuDays);
+    client.followUpDate = `${fuDate.getFullYear()}-${String(fuDate.getMonth()+1).padStart(2,'0')}-${String(fuDate.getDate()).padStart(2,'0')}`;
+    syncCareFinance(care, client.id);
+    if(!saveData()){ toast('保存失败：存储空间不足'); return; }
+    closeModal(); render(); toast(`${isNewClient?'已建客户并':'已'}同步到门店财务 ✅`);
+  }catch(e){
+    console.error('saveQuickCheckout error:', e);
     toast('保存失败：'+e.message);
   }
 }
@@ -3107,6 +3207,7 @@ function renderFinance(el){
   const monthShopIncome = monthShop.filter(f=>f.type==='income').reduce((s,f)=>s+Number(f.amount),0);
   const monthShopExpense = monthShop.filter(f=>f.type==='expense').reduce((s,f)=>s+Number(f.amount),0);
   const todayShopIncome = shopFinances.filter(f=>f.date===today && f.type==='income').reduce((s,f)=>s+Number(f.amount),0);
+  const todayShopIncomeRecords = shopFinances.filter(f=>f.date===today && f.type==='income').sort((a,b)=>(b.created||'').localeCompare(a.created||''));
 
   // 个人财务数据
   const personalFinances = DB.finances.filter(f=>f.scope==='personal');
@@ -3123,7 +3224,8 @@ function renderFinance(el){
   el.innerHTML = `
     ${pageHeader('财务管理', '个人财务 + 门店经营', 
       `<button class="btn btn-outline" onclick="openFinance('', 'personal')">+ 个人收支</button>
-       <button class="btn btn-primary" onclick="openFinance('', 'shopExpense')">+ 门店支出</button>`)}
+       <button class="btn btn-outline" onclick="openFinance('', 'shopExpense')">+ 门店支出</button>
+       <button class="btn btn-primary" onclick="openQuickCheckout()">+ 录客户消费</button>`)}
 
     <!-- 每日营业目标 -->
     <div class="card p-5 mb-5" style="background:linear-gradient(135deg,${goalReached?'#f0fdf4,#dcfce7':'#fff7ed,#fed7aa'});border-color:${goalReached?'#bbf7d0':'#fdba74'};">
@@ -3155,11 +3257,29 @@ function renderFinance(el){
         <div class="text-center"><div class="text-lg font-bold">${fmtMoney(monthShopIncome-monthShopExpense)}</div><div class="text-xs text-[var(--text-faint)]">门店利润</div></div>
       </div>
       <div class="border-t border-[var(--border)] pt-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-xs text-[var(--text-faint)]">今日门店流水（CRM 自动同步）</div>
+          <div class="text-xs font-medium text-[var(--green)]">合计 ${fmtMoney(todayShopIncome)}</div>
+        </div>
+        ${todayShopIncomeRecords.length>0 ? `<div class="space-y-1">${todayShopIncomeRecords.map(f=>`
+          <div class="grid grid-cols-[56px_1fr_1fr_64px_70px] gap-2 items-center text-sm py-1">
+            <span class="text-xs text-[var(--text-faint)]">${fmtDate(f.date)}</span>
+            <span class="text-xs truncate">
+              ${escape(f.clientName || clientDisplayName(f.clientId) || '-')}
+              ${f.clientWechat?`<span class="text-[var(--text-faint)]"> · ${escape(f.clientWechat)}</span>`:''}
+              ${f.clientType==='会员'?'<span class="tag tag-purple ml-1">会员</span>':''}
+            </span>
+            <span class="tag tag-green text-xs truncate">${escape(f.project || f.category || '')}</span>
+            <span class="text-xs text-[var(--text-faint)] truncate">${escape(f.paymentMethod||'')}</span>
+            <span class="font-medium text-[var(--green)]">${fmtMoney(f.amount)}</span>
+          </div>`).join('')}</div>` : '<p class="text-sm text-[var(--text-faint)] text-center py-2">今天还没有客户消费流水</p>'}
+      </div>
+      <div class="border-t border-[var(--border)] pt-3">
         <div class="text-xs text-[var(--text-faint)] mb-2">本月门店收入明细（自动来自 CRM 消费）</div>
         ${monthShop.filter(f=>f.type==='income').length>0 ? `<div class="space-y-1">${monthShop.filter(f=>f.type==='income').sort((a,b)=>b.date.localeCompare(a.date)).map(f=>`
           <div class="grid grid-cols-[56px_1fr_1fr_70px_70px] gap-2 items-center text-sm py-1">
             <span class="text-xs text-[var(--text-faint)] w-16">${fmtDate(f.date)}</span>
-            <span class="text-xs truncate">${escape(f.clientName || clientDisplayName(f.clientId) || '-')}</span>
+            <span class="text-xs truncate">${escape(f.clientName || clientDisplayName(f.clientId) || '-')}${f.clientWechat?` · ${escape(f.clientWechat)}`:''}${f.clientType==='会员'?' · 会员':''}</span>
             <span class="tag tag-green text-xs truncate">${escape(f.project || f.category || '')}</span>
             <span class="text-xs text-[var(--text-faint)] truncate">${escape(f.paymentMethod||'')}</span>
             <span class="font-medium text-[var(--green)]">${fmtMoney(f.amount)}</span>

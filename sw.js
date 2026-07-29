@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v19-crm-finance-voice-fix';
+const CACHE_NAME = 'lifeos-v20-crm-pos-ledger';
 const FILES_TO_CACHE = [
   './',
   './index.html',
