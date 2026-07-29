@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v17-learning-center';
+const CACHE_NAME = 'lifeos-v18-journal-english-voice';
 const FILES_TO_CACHE = [
   './',
   './index.html',

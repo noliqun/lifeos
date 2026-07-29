@@ -57,6 +57,12 @@
   .tag-orange{ background:var(--orange-soft); color:var(--orange); }
   .tag-purple{ background:var(--purple-soft); color:var(--purple); }
   .tag-red{ background:var(--red-soft); color:var(--red); }
+  .choice-row{ display:flex; gap:8px; flex-wrap:wrap; }
+  .choice-pill input{ display:none; }
+  .choice-pill span{ display:inline-flex; align-items:center; justify-content:center; min-width:58px; padding:8px 12px; border:1px solid var(--border-strong); border-radius:999px; background:#fff; color:var(--text-soft); font-size:14px; cursor:pointer; transition:all .15s; }
+  .choice-pill input:checked + span{ background:var(--text); color:#fff; border-color:var(--text); }
+  .speak-btn{ padding:3px 8px; border-radius:999px; border:1px solid #bfdbfe; background:#eff6ff; color:#2563eb; font-size:12px; white-space:nowrap; }
+  .speak-btn:hover{ background:#dbeafe; }
 
   .menu-item{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:9px; color:var(--text-soft); font-size:14px; font-weight:500; cursor:pointer; transition:all .12s; }
   .menu-item:hover{ background:var(--accent-soft); color:var(--text); }
@@ -528,6 +534,12 @@ function migrateDB(){
     if(g.routeId===undefined) g.routeId = '';
     if(g.day===undefined) g.day = 1;
   });
+  DB.journals.forEach(j=>{
+    if(j.bodyStatus===undefined) j.bodyStatus = '';
+    if(j.emotionStatus===undefined) j.emotionStatus = '';
+    if(j.gratefulSelf===undefined) j.gratefulSelf = '';
+    if(j.aiSummary===undefined) j.aiSummary = '';
+  });
 
   // V1.1：学习中心英语课程种子资料。只保存引用链接，不下载视频。
   const englishSeeds = [
@@ -730,6 +742,28 @@ function fmtDateFull(d){ if(!d) return ''; const dt=new Date(d); return `${dt.ge
 function fmtMoney(n){ return '¥'+Number(n||0).toLocaleString('zh-CN',{minimumFractionDigits:0,maximumFractionDigits:2}); }
 function toast(msg){ const r=document.getElementById('toast-root'); r.innerHTML=`<div class="toast">${msg}</div>`; setTimeout(()=>r.innerHTML='',2500); }
 function escape(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function jsStr(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,''); }
+function renderStatusOptions(name, current, options){
+  return `<div class="choice-row">${options.map(o=>`<label class="choice-pill"><input type="radio" name="${name}" value="${escape(o)}" ${current===o?'checked':''}><span>${escape(o)}</span></label>`).join('')}</div>`;
+}
+function selectedRadio(name){
+  return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
+}
+function speakEnglish(text){
+  if(!('speechSynthesis' in window)){ toast('当前浏览器不支持朗读'); return; }
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-US';
+  u.rate = 0.82;
+  u.pitch = 1;
+  window.speechSynthesis.speak(u);
+}
+function speakLine(en, zh){
+  return `<div class="flex items-center justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">
+    <div><span class="font-medium text-[var(--text)]">${escape(en)}</span>${zh?`<span class="text-[var(--text-faint)]"> · ${escape(zh)}</span>`:''}</div>
+    <button class="speak-btn" onclick="event.stopPropagation();speakEnglish('${jsStr(en)}')">🔊 朗读</button>
+  </div>`;
+}
 
 /* ---------- 路由 ---------- */
 const MENU = [
@@ -1310,7 +1344,6 @@ function renderJournal(el){
       <input class="input flex-1 min-w-[200px]" placeholder="🔍 搜索日志..." value="${escape(q)}" oninput="debounceSearch(this.value)">
     </div>
 
-    ${(!cat || cat==='英语') ? renderEnglishDay1Card() : ''}
     ${list.length===0 ? emptyState('📖','还没有日志，点击「新建今天」开始记录') :
     `<div class="space-y-3">
       ${items.map(j=>journalCard(j)).join('')}
@@ -1333,6 +1366,10 @@ function journalCard(j){
       <span class="text-[var(--text-faint)]">✅ 昨天计划完成：</span>
       <span class="font-medium ${planDoneCount>0?'text-[var(--green)]':'text-[var(--red)]'}">${planDoneCount}/3</span>
     </div>` : ''}
+    ${j.bodyStatus||j.emotionStatus ? `<div class="mt-2 flex gap-2 flex-wrap text-xs">
+      ${j.bodyStatus?`<span class="tag tag-green">身体：${escape(j.bodyStatus)}</span>`:''}
+      ${j.emotionStatus?`<span class="tag tag-purple">情绪：${escape(j.emotionStatus)}</span>`:''}
+    </div>`:''}
     ${j.tomorrow1||j.tomorrow2||j.tomorrow3 ? `<div class="mt-3 pt-3 border-t border-[var(--border)] text-sm text-[var(--text-soft)]">
       🎯 明天：${escape(j.tomorrow1)}${j.tomorrow2?' · '+escape(j.tomorrow2):''}${j.tomorrow3?' · '+escape(j.tomorrow3):''}
     </div>`:''}
@@ -1349,6 +1386,7 @@ function createTodayJournal(){
       happy: '', insight: '', closerFreedom: '',
       done: '', videoInspire: '',
       reflect: '',
+      bodyStatus: '', emotionStatus: '', gratefulSelf: '', aiSummary: '',
       planDone1:'', planDone2:'', planDone3:'',
       planCheck1:false, planCheck2:false, planCheck3:false,
       tomorrow1: '', tomorrow2: '', tomorrow3: '',
@@ -1365,6 +1403,9 @@ function openJournal(id){
     ${modalBody(`
       <div class="space-y-4">
         <div><label>📅 日期</label><input class="input" type="date" id="j-date" value="${j.date}"></div>
+        <div><label>😊 今天身体状态</label>${renderStatusOptions('j-body-status', j.bodyStatus||'', ['很好','不错','一般','不舒服','很差'])}</div>
+        <div><label>❤️ 今天情绪状态</label>${renderStatusOptions('j-emotion-status', j.emotionStatus||'', ['很好','不错','一般','不好','很差'])}</div>
+        <div><label>🙏 今天最感谢自己的事情</label><textarea class="textarea" id="j-grateful" placeholder="可以写一句，也可以写很多句。">${escape(j.gratefulSelf)}</textarea></div>
         <div><label>😊 今天让我开心的事情</label><textarea class="textarea" id="j-happy">${escape(j.happy)}</textarea></div>
         <div><label>💡 今天最大的感悟</label><textarea class="textarea" id="j-insight">${escape(j.insight)}</textarea></div>
         <div><label>🎯 今天有没有为自己的人生自由之路做了什么？</label><textarea class="textarea" id="j-freedom">${escape(j.closerFreedom)}</textarea></div>
@@ -1394,10 +1435,11 @@ function openJournal(id){
         </div>
         <div class="border-t border-[var(--border)] pt-4">
           <div class="flex items-center justify-between mb-2">
-            <label class="!mb-0 font-semibold">✨ AI 总结今天</label>
-            <button class="btn btn-outline btn-sm" onclick="aiSummarizeJournal('${j.id}')">生成总结</button>
+            <label class="!mb-0 font-semibold">✨ 今日复盘总结</label>
+            <button class="btn btn-outline btn-sm" onclick="aiSummarizeJournal('${j.id}')">生成可用总结</button>
           </div>
-          <div id="ai-journal-result" class="text-sm text-[var(--text-soft)]"></div>
+          <p class="text-xs text-[var(--text-faint)] mb-2">无需 AI Key，也不联网；根据你当前填写的内容直接生成。</p>
+          <div id="ai-journal-result" class="text-sm text-[var(--text-soft)]">${j.aiSummary?escape(j.aiSummary).replace(/\n/g,'<br>'):''}</div>
         </div>
       </div>
     `)}
@@ -1418,6 +1460,9 @@ function saveJournal(id){
     j.date = newDate;
     j.id = 'j_' + newDate.replace(/-/g,'');
   }
+  j.bodyStatus = selectedRadio('j-body-status');
+  j.emotionStatus = selectedRadio('j-emotion-status');
+  j.gratefulSelf = val('j-grateful');
   j.happy = val('j-happy'); j.insight = val('j-insight'); j.closerFreedom = val('j-freedom');
   j.done = val('j-done'); j.videoInspire = val('j-video');
   j.reflect = val('j-reflect');
@@ -1439,9 +1484,33 @@ function updatePlanCheck(n){
 }
 async function aiSummarizeJournal(id){
   const j = DB.journals.find(x=>x.id===id); if(!j) return;
-  const prompt = `请总结以下日志，给出：1) 今日成长亮点（2-3句） 2) 需要改进的点 3) 明天的行动建议。\n\n日期：${j.date}\n开心：${j.happy}\n感悟：${j.insight}\n自由之路：${j.closerFreedom}\n完成：${j.done}\n反思：${j.reflect}\n昨天计划完成：${[j.planDone1,j.planDone2,j.planDone3].filter(Boolean).join(', ')}\n明天三件事：${j.tomorrow1}, ${j.tomorrow2}, ${j.tomorrow3}`;
   const el = document.getElementById('ai-journal-result');
-  callAIStream(prompt, '你是一个温暖的人生教练，帮助用户复盘成长。语言精炼有力。', el);
+  const draft = {
+    bodyStatus: selectedRadio('j-body-status') || j.bodyStatus,
+    emotionStatus: selectedRadio('j-emotion-status') || j.emotionStatus,
+    gratefulSelf: val('j-grateful') || j.gratefulSelf,
+    happy: val('j-happy') || j.happy,
+    insight: val('j-insight') || j.insight,
+    closerFreedom: val('j-freedom') || j.closerFreedom,
+    done: val('j-done') || j.done,
+    reflect: val('j-reflect') || j.reflect,
+    tomorrow: [val('j-t1')||j.tomorrow1, val('j-t2')||j.tomorrow2, val('j-t3')||j.tomorrow3].filter(Boolean)
+  };
+  const lines = [
+    `今日状态：身体${draft.bodyStatus||'未记录'}，情绪${draft.emotionStatus||'未记录'}。`,
+    draft.gratefulSelf ? `今天最值得感谢自己的是：${draft.gratefulSelf}` : '',
+    draft.done ? `今天做得很棒的事情：${draft.done}` : '',
+    draft.happy ? `今天的开心来源：${draft.happy}` : '',
+    draft.insight ? `今天的感悟：${draft.insight}` : '',
+    draft.closerFreedom ? `离自由人生更近的一步：${draft.closerFreedom}` : '',
+    draft.reflect ? `明天可以轻一点改进：${draft.reflect}` : '',
+    draft.tomorrow.length ? `明天先抓住这几件事：${draft.tomorrow.join('；')}` : ''
+  ].filter(Boolean);
+  const summary = lines.length ? lines.join('\n') : '今天还没有填写太多内容。可以先补上身体状态、情绪状态，以及最感谢自己的事情，再生成总结。';
+  j.aiSummary = summary;
+  saveData();
+  if(el) el.innerHTML = escape(summary).replace(/\n/g,'<br>');
+  toast('总结已生成 ✅');
 }
 function aiSummarizeWeek(){
   const now = new Date();
@@ -1642,8 +1711,6 @@ function renderClient(el){
         ${hasActiveFilters?`<button class="btn btn-ghost btn-sm ml-auto" onclick="clearAllClientFilters()">✕ 清除筛选</button>`:''}
       </div>
     </div>
-
-    ${(!cat || cat==='英语') ? renderEnglishDay1Card() : ''}
     ${list.length===0 ? emptyState('👩','没有符合条件的客户','<button class="btn btn-primary" onclick="clearAllClientFilters();openClient()">+ 新建客户</button>') :
     `<div class="text-xs text-[var(--text-faint)] mb-2">共 ${list.length} 位客户</div>
     <div class="grid md:grid-cols-2 gap-3">
@@ -3528,46 +3595,57 @@ function renderLearningCard(l){
 
 
 function renderEnglishDay1Card(){
+  const words = [
+    ['nail','美甲'], ['manicure','手部美甲'], ['gel polish','甲油胶'], ['color','颜色'],
+    ['thermal paper','热敏纸'], ['sample','样品'], ['price','价格'], ['order','订单']
+  ];
+  const sentences = [
+    ['Hello, how can I help you?','您好，我可以怎么帮您？'],
+    ['What color do you like?','您喜欢什么颜色？'],
+    ['We can send you samples.','我们可以给您寄样品。'],
+    ['May I know your order quantity?','请问您的订单数量是多少？'],
+    ['Sure. We can do red gel polish.','当然，可以做红色甲油胶。']
+  ];
   return `
     <div class="card p-4 mb-4" style="border-color:#bfdbfe;background:linear-gradient(180deg,#eff6ff,#fff);">
       <div class="flex items-start justify-between gap-3 mb-3">
         <div>
           <div class="tag tag-blue mb-2">英语 · Day1</div>
           <h3 class="text-lg font-semibold">零基础客户沟通英语：先会打招呼和介绍服务</h3>
-          <p class="text-sm text-[var(--text-soft)] mt-1">学习 30 分钟。目标：今天能用最简单英语接待客户、确认需求。</p>
+          <p class="text-sm text-[var(--text-soft)] mt-1">学习 30 分钟。目标：今天能听懂并跟读最简单的客户接待、确认需求句子。</p>
         </div>
         <button class="btn btn-primary btn-sm" onclick="markEnglishDay1Done()">今天打卡</button>
+      </div>
+      <div class="rounded-xl border border-blue-100 bg-white/80 p-3 mb-3 text-sm text-[var(--text-soft)]">
+        零基础学习顺序：先点 🔊 听 2 遍，再看中文意思，最后跟着读 5 遍。不会读没关系，今天只练“敢开口”。
       </div>
       <div class="grid md:grid-cols-2 gap-3 text-sm">
         <div class="bg-white rounded-xl border border-[var(--border)] p-3">
           <div class="font-semibold mb-2">今天单词</div>
-          <div class="space-y-1 text-[var(--text-soft)]">
-            <div>nail 美甲 / manicure 手部美甲</div>
-            <div>gel polish 甲油胶 / color 颜色</div>
-            <div>thermal paper 热敏纸 / sample 样品</div>
-            <div>price 价格 / order 订单</div>
+          <div class="space-y-0 text-[var(--text-soft)]">
+            ${words.map(w=>speakLine(w[0], w[1])).join('')}
           </div>
         </div>
         <div class="bg-white rounded-xl border border-[var(--border)] p-3">
           <div class="font-semibold mb-2">今天句子</div>
-          <div class="space-y-1 text-[var(--text-soft)]">
-            <div>Hello, how can I help you?</div>
-            <div>What color do you like?</div>
-            <div>We can send you samples.</div>
-            <div>May I know your order quantity?</div>
+          <div class="space-y-0 text-[var(--text-soft)]">
+            ${sentences.slice(0,4).map(s=>speakLine(s[0], s[1])).join('')}
           </div>
         </div>
         <div class="bg-white rounded-xl border border-[var(--border)] p-3">
           <div class="font-semibold mb-2">今天听力</div>
-          <p class="text-[var(--text-soft)]">打开资料 1，听 10 分钟零基础日常英语，重点听 Hello / help / like / price。</p>
+          <p class="text-[var(--text-soft)] mb-2">不用先找视频。先点下面按钮连续听，重点听 Hello / help / color / sample / price。</p>
+          <button class="btn btn-outline btn-sm" onclick="speakEnglish('Hello, how can I help you? What color do you like? We can send you samples. May I know your order quantity?')">🔊 连续听今天句子</button>
         </div>
         <div class="bg-white rounded-xl border border-[var(--border)] p-3">
           <div class="font-semibold mb-2">今天口语</div>
-          <p class="text-[var(--text-soft)]">每个句子跟读 5 遍，录音听一遍，不要求完美，只要求敢说。</p>
+          <p class="text-[var(--text-soft)] mb-2">每个句子先听，再跟读 5 遍。读慢一点也可以，不要求完美。</p>
+          ${speakLine('Hello, how can I help you?','今天必须会说的第一句')}
         </div>
         <div class="bg-white rounded-xl border border-[var(--border)] p-3">
           <div class="font-semibold mb-2">今天练习</div>
-          <p class="text-[var(--text-soft)]">模拟客户问：I want red nails. 你回答：Sure. We can do red gel polish.</p>
+          <p class="text-[var(--text-soft)] mb-2">模拟客户说：I want red nails. 你回答下面这句。</p>
+          ${speakLine('Sure. We can do red gel polish.','好的，可以做红色甲油胶。')}
         </div>
         <div class="bg-white rounded-xl border border-[var(--border)] p-3">
           <div class="font-semibold mb-2">学习资料</div>
