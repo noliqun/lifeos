@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v18-journal-english-voice';
+const CACHE_NAME = 'lifeos-v19-crm-finance-voice-fix';
 const FILES_TO_CACHE = [
   './',
   './index.html',

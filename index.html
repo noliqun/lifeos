@@ -504,6 +504,12 @@ function migrateDB(){
       else if(f.source==='journal') f.scope = 'personal';
       else f.scope = 'personal'; // 默认归为个人
     }
+    if(f.paymentMethod==='扣次卡' || f.paymentMethod==='会员余额') f.paymentMethod='扣卡';
+  });
+  DB.cares.forEach(care=>{
+    if(care.payMethod==='扣次卡' || care.payMethod==='会员余额') care.payMethod='扣卡';
+    if(care.payMethod==='新充值') care.payMethod='微信';
+    if(Number(care.payment||0)>0) syncCareFinance(care, care.clientId, {silent:true});
   });
   // V4 学习系统升级
   if(!DB.learnRoutes) DB.learnRoutes = [];
@@ -568,7 +574,7 @@ setTimeout(()=>{ migratePhotosToIndexedDB(); }, 1000);
 
 /* CRM 常量 */
 const PROJECT_TYPES = ['美甲','美睫','皮肤管理','祛痘','半永久'];
-const PAY_METHODS = ['微信','支付宝','现金','扣次卡','会员余额','新充值'];
+const PAY_METHODS = ['现金','微信','支付宝','扣卡'];
 const CLIENT_TYPES = ['新客','老客','会员'];
 const CLIENT_SOURCES = ['老客户介绍','小红书','抖音','美团','路过','其他'];
 const CLIENT_TAGS = ['新客','老客','美甲','美睫','皮肤管理','祛痘','半永久（纹绣）','VIP','高消费客户'];
@@ -586,7 +592,7 @@ const LEARNING_TYPES = ['英语','美容英语','热敏纸外贸英语','日常�
 const SHOP_INCOME_CATS = ['美甲','美睫','皮肤管理','祛痘','半永久','产品销售','会员充值'];
 const SHOP_EXPENSE_CATS = ['房租','水电','耗材','产品采购','员工工资','设备','其他经营支出'];
 const PERSONAL_INCOME_CATS = ['工资','副业','投资收益','红包','其他收入'];
-const PERSONAL_EXPENSE_CATS = ['房租','吃饭','交通','购物','娱乐','其他'];
+const PERSONAL_EXPENSE_CATS = ['房租','吃饭','奶茶','交通','购物','娱乐','其他'];
 
 /* CRM 回访提醒规则（可配置） */
 function getFollowUpDays(projectType){
@@ -706,6 +712,34 @@ function daysSinceLastVisit(c, cache){
   if(!lastDate) return 9999;
   return Math.floor((new Date(todayStr())-new Date(lastDate))/86400000);
 }
+function clientDisplayName(clientId){
+  const c = DB.clients.find(x=>x.id===clientId);
+  return c ? (c.name || c.wechatName || '未命名客户') : '未命名客户';
+}
+function getClientSortName(c){
+  return (c.name || c.wechatName || '').trim() || '未命名客户';
+}
+function syncCareFinance(care, clientId, opts={}){
+  if(!care || !care.id) return;
+  const amount = Number(care.payment||0);
+  const existing = DB.finances.find(f=>f.source==='care' && f.refId===care.id);
+  if(amount <= 0){
+    DB.finances = DB.finances.filter(f=>!(f.source==='care' && f.refId===care.id));
+    return;
+  }
+  const record = existing || { id:'fin_'+care.id, source:'care', refId:care.id, created:new Date().toISOString() };
+  record.type = 'income';
+  record.scope = 'shop';
+  record.amount = amount;
+  record.date = care.date || todayStr();
+  record.category = care.projectType || '护理';
+  record.project = care.projectType || '护理';
+  record.clientId = clientId || care.clientId || '';
+  record.clientName = clientDisplayName(record.clientId);
+  record.paymentMethod = care.payMethod || '微信';
+  record.note = care.careNote || care.careNote2 || care.nailNote || care.lashNote || care.semiNote || '';
+  if(!existing) DB.finances.push(record);
+}
 function statusTag(status){
   const map = { '活跃':'tag-green','待回访':'tag-orange','沉睡':'tag-red','流失风险':'tag-red' };
   return `<span class="tag ${map[status]||''}">${status}</span>`;
@@ -752,11 +786,24 @@ function selectedRadio(name){
 function speakEnglish(text){
   if(!('speechSynthesis' in window)){ toast('当前浏览器不支持朗读'); return; }
   window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'en-US';
-  u.rate = 0.82;
-  u.pitch = 1;
-  window.speechSynthesis.speak(u);
+  const parts = String(text||'')
+    .replace(/\s+/g,' ')
+    .split(/(?<=[.!?])\s+|[；;]\s*/)
+    .map(s=>s.trim())
+    .filter(Boolean);
+  const queue = parts.length ? parts : [String(text||'')];
+  let i = 0;
+  const speakNext = ()=>{
+    if(i >= queue.length) return;
+    const u = new SpeechSynthesisUtterance(queue[i++]);
+    u.lang = 'en-US';
+    u.rate = 0.78;
+    u.pitch = 1;
+    u.onend = ()=>setTimeout(speakNext, 120);
+    u.onerror = ()=>setTimeout(speakNext, 120);
+    window.speechSynthesis.speak(u);
+  };
+  speakNext();
 }
 function speakLine(en, zh){
   return `<div class="flex items-center justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">
@@ -1574,8 +1621,7 @@ function renderClient(el){
     });
   }
   list.sort((a,b)=>{
-    const la=calcClientLife(a,cache), lb=calcClientLife(b,cache);
-    return (lb.lastDate||'').localeCompare(la.lastDate||'');
+    return getClientSortName(a).localeCompare(getClientSortName(b), 'zh-Hans-CN-u-co-pinyin', {sensitivity:'base'});
   });
   const allTags = [...new Set(DB.clients.flatMap(c=>[...(c.tags||[]), ...calcClientLife(c,cache).projectSet]))];
   const allProjects = [...new Set(DB.clients.flatMap(c=>calcClientLife(c,cache).projectSet))];
@@ -1621,61 +1667,18 @@ function renderClient(el){
         <div class="text-xs text-[var(--text-faint)]">总客户 ${DB.clients.length}</div>
       </div>
       <div class="card p-3" style="background:linear-gradient(135deg,#faf5ff,#f3e8ff);border-color:#e9d5ff;">
-        <div class="text-xs text-[var(--text-faint)]">VIP/高价值</div>
+        <div class="text-xs text-[var(--text-faint)]">VIP/高价值客户</div>
         <div class="text-lg font-bold text-[var(--purple)]">${vipCount+highValueCount}</div>
         <div class="text-xs text-[var(--text-faint)]">VIP ${vipCount} · 高价值 ${highValueCount}</div>
       </div>
       <div class="card p-3" style="background:linear-gradient(135deg,#fff7ed,#fed7aa);border-color:#fdba74;">
-        <div class="text-xs text-[var(--text-faint)]">待回访/流失风险</div>
+        <div class="text-xs text-[var(--text-faint)]">待回访</div>
         <div class="text-lg font-bold text-[var(--orange)]">${followUpCount+lostCount}</div>
         <div class="text-xs text-[var(--text-faint)]">待回访 ${followUpCount} · 流失 ${lostCount}</div>
       </div>
     </div>
 
-    <!-- CRM 客户状态概览 -->
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
-      <div class="card p-3 text-center cursor-pointer hover:border-[var(--border-strong)] ${!statusFilter&&!levelFilter?'ring-2 ring-[var(--blue)]':''}" onclick="filterClientStatus('')">
-        <div class="text-xl font-bold">${DB.clients.length}</div><div class="text-xs text-[var(--text-faint)]">总客户</div>
-      </div>
-      <div class="card p-3 text-center cursor-pointer hover:border-[var(--border-strong)] ${statusFilter==='待回访'?'ring-2 ring-[var(--orange)]':''}" onclick="filterClientStatus('待回访')">
-        <div class="text-xl font-bold text-[var(--orange)]">${followUpCount}</div><div class="text-xs text-[var(--text-faint)]">待回访</div>
-      </div>
-      <div class="card p-3 text-center cursor-pointer hover:border-[var(--border-strong)] ${statusFilter==='活跃'?'ring-2 ring-[var(--green)]':''}" onclick="filterClientStatus('活跃')">
-        <div class="text-xl font-bold text-[var(--green)]">${activeCount}</div><div class="text-xs text-[var(--text-faint)]">活跃</div>
-      </div>
-      <div class="card p-3 text-center cursor-pointer hover:border-[var(--border-strong)] ${statusFilter==='沉睡'?'ring-2 ring-[var(--red)]':''}" onclick="filterClientStatus('沉睡')">
-        <div class="text-xl font-bold text-[var(--red)]">${sleepCount}</div><div class="text-xs text-[var(--text-faint)]">沉睡</div>
-      </div>
-      <div class="card p-3 text-center cursor-pointer hover:border-[var(--border-strong)] ${statusFilter==='流失风险'?'ring-2 ring-[var(--red)]':''}" onclick="filterClientStatus('流失风险')">
-        <div class="text-xl font-bold text-[var(--red)]">${lostCount}</div><div class="text-xs text-[var(--text-faint)]">流失风险</div>
-      </div>
-    </div>
-
-    <!-- 回访提醒 -->
-    ${followUps.length>0 ? `
-      <div class="card p-4 mb-4" style="background:linear-gradient(135deg,#fff7ed,#fef2f2);border-color:#fed7aa;">
-        <div class="flex items-center gap-2 mb-3">
-          <span class="text-lg">🔔</span>
-          <h3 class="font-semibold text-sm">今日回访提醒（${followUps.length}）</h3>
-        </div>
-        <div class="space-y-2">
-          ${followUps.slice(0,5).map(c=>{
-            const life=calcClientLife(c,cache);
-            const lastCare = life.lastDate ? (cache.get(c.id).cares.slice().sort((a,b)=>b.date.localeCompare(a.date))[0]) : null;
-            return `<div class="flex items-center gap-3 bg-white rounded-lg p-2.5 cursor-pointer hover:bg-[var(--accent-soft)]" onclick="openClient('${c.id}')">
-              <div class="w-8 h-8 rounded-full bg-[var(--purple-soft)] flex items-center justify-center text-sm font-medium text-[var(--purple)]">${escape((c.name||c.wechatName||'?')[0]||'?')}</div>
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium">${escape(c.name||c.wechatName||'未命名')} ${c.wechatName&&c.name?'<span class="text-xs text-[var(--text-faint)]">'+escape(c.wechatName)+'</span>':''}</div>
-                <div class="text-xs text-[var(--text-faint)]">上次：${escape(lastCare?lastCare.projectType:'')} · ${fmtMoney(lastCare?lastCare.payment:0)} · ${life.lastDate?fmtDate(life.lastDate):''}</div>
-              </div>
-              <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();aiFollowUpScript('${c.id}')">AI话术</button>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-    ` : ''}
-
-    <!-- V4: 高级搜索 + 多条件筛选 -->
+    <!-- 客户列表筛选 -->
     <div class="card p-3 mb-4">
       <div class="flex gap-2 mb-2 flex-wrap">
         <input class="input flex-1 min-w-[160px]" placeholder="🔍 搜索姓名/电话/微信..." value="${escape(q)}" oninput="debounceClientSearch(this.value)">
@@ -1741,7 +1744,6 @@ function clientCard(c, cache){
   const fu = calcFollowUp(c, cache);
   const displayName = c.name || c.wechatName || '未命名';
   const fuBadge = fu ? (fu.isDue && fu.status==='待回访' ? '<span class="tag tag-red">🔔 待回访</span>' : fu.isSoon && fu.status==='待回访' ? `<span class="tag tag-orange">${fu.diffDays}天后</span>` : '') : '';
-  const daysSince = daysSinceLastVisit(c, cache);
   return `<div class="card p-4 cursor-pointer hover:border-[var(--border-strong)] transition" onclick="openClient('${c.id}')">
     <div class="flex items-start gap-3">
       <div class="w-11 h-11 rounded-full bg-[var(--purple-soft)] flex items-center justify-center text-base font-bold text-[var(--purple)] shrink-0">${escape(displayName[0]||'?')}</div>
@@ -1753,14 +1755,9 @@ function clientCard(c, cache){
           ${statusTag(life.status)}
           ${fuBadge}
         </div>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-          ${life.visitCount}次到店 · 累计${fmtMoney(life.totalPay)} · 客单价${fmtMoney(life.avgPay)} · ${life.lastDate?'最近'+fmtDate(life.lastDate):'未到店'}
-          ${daysSince<=30?'':daysSince<=90?' · <span class="text-[var(--orange)]">'+daysSince+'天未到店</span>':' · <span class="text-[var(--red)]">'+daysSince+'天未到店</span>'}
-        </div>
-        <div class="flex gap-1 mt-1.5 flex-wrap">
-          ${life.projectSet.map(p=>`<span class="tag tag-blue">${escape(p)}</span>`).join('')}
-          ${(c.tags||[]).map(t=>`<span class="tag">${escape(t)}</span>`).join('')}
-          ${life.autoTags.map(t=>`<span class="tag tag-purple">${escape(t)}</span>`).join('')}
+        <div class="grid grid-cols-2 gap-2 text-xs text-[var(--text-faint)] mt-2">
+          <div>最近到店：<span class="text-[var(--text)]">${life.lastDate?fmtDate(life.lastDate):'未到店'}</span></div>
+          <div>最后项目：<span class="text-[var(--text)]">${escape(life.lastProject||'-')}</span></div>
         </div>
       </div>
     </div>
@@ -2017,6 +2014,7 @@ function deleteClient(id){
   if(!confirm('确定删除该客户及所有护理记录吗？')) return;
   DB.clients = DB.clients.filter(c=>c.id!==id);
   DB.cares = DB.cares.filter(c=>c.clientId!==id);
+  DB.finances = DB.finances.filter(f=>!(f.source==='care' && f.clientId===id));
   saveData(); closeModal(); render(); toast('已删除');
 }
 
@@ -2222,9 +2220,8 @@ function saveCare(id, clientId, isNew){
   care.semiPart = val('care-semiPart'); care.semiItem = val('care-semiItem');
   care.semiOpType = val('care-semiOpType'); care.semiDesign = val('care-semiDesign');
   care.semiColor = val('care-semiColor'); care.semiRecovery = val('care-semiRecovery'); care.semiNote = val('care-semiNote');
-  // 同步到财务
-  DB.finances = DB.finances.filter(fn=>!(fn.source==='care'&&fn.refId===care.id));
-  if(Number(care.payment)>0) DB.finances.push({id:uid(),type:'income',amount:Number(care.payment),date:care.date,category:care.projectType||'护理',source:'care',refId:care.id,clientId,scope:'shop'});
+  // 同步到门店财务：同一条到店记录只对应一条收入，编辑时更新，不重复新增
+  syncCareFinance(care, clientId);
   // 更新客户信息
   const client = DB.clients.find(c=>c.id===clientId);
   if(client){
@@ -3125,7 +3122,8 @@ function renderFinance(el){
 
   el.innerHTML = `
     ${pageHeader('财务管理', '个人财务 + 门店经营', 
-      `<button class="btn btn-primary" onclick="openFinance()">+ 记一笔</button>`)}
+      `<button class="btn btn-outline" onclick="openFinance('', 'personal')">+ 个人收支</button>
+       <button class="btn btn-primary" onclick="openFinance('', 'shopExpense')">+ 门店支出</button>`)}
 
     <!-- 每日营业目标 -->
     <div class="card p-5 mb-5" style="background:linear-gradient(135deg,${goalReached?'#f0fdf4,#dcfce7':'#fff7ed,#fed7aa'});border-color:${goalReached?'#bbf7d0':'#fdba74'};">
@@ -3157,14 +3155,14 @@ function renderFinance(el){
         <div class="text-center"><div class="text-lg font-bold">${fmtMoney(monthShopIncome-monthShopExpense)}</div><div class="text-xs text-[var(--text-faint)]">门店利润</div></div>
       </div>
       <div class="border-t border-[var(--border)] pt-3">
-        <div class="text-xs text-[var(--text-faint)] mb-2">本月门店收入明细</div>
+        <div class="text-xs text-[var(--text-faint)] mb-2">本月门店收入明细（自动来自 CRM 消费）</div>
         ${monthShop.filter(f=>f.type==='income').length>0 ? `<div class="space-y-1">${monthShop.filter(f=>f.type==='income').sort((a,b)=>b.date.localeCompare(a.date)).map(f=>`
-          <div class="flex items-center gap-2 text-sm py-1">
+          <div class="grid grid-cols-[56px_1fr_1fr_70px_70px] gap-2 items-center text-sm py-1">
             <span class="text-xs text-[var(--text-faint)] w-16">${fmtDate(f.date)}</span>
-            <span class="tag tag-green text-xs">${escape(f.category||'')}</span>
-            <span class="flex-1 text-xs text-[var(--text-faint)] truncate">${escape(f.note||'')}</span>
+            <span class="text-xs truncate">${escape(f.clientName || clientDisplayName(f.clientId) || '-')}</span>
+            <span class="tag tag-green text-xs truncate">${escape(f.project || f.category || '')}</span>
+            <span class="text-xs text-[var(--text-faint)] truncate">${escape(f.paymentMethod||'')}</span>
             <span class="font-medium text-[var(--green)]">${fmtMoney(f.amount)}</span>
-            <button class="btn btn-ghost btn-sm" onclick="openFinance('${f.id}')">编辑</button>
           </div>`).join('')}</div>` : '<p class="text-sm text-[var(--text-faint)] text-center py-2">暂无门店收入</p>'}
       </div>
       <div class="border-t border-[var(--border)] pt-3 mt-2">
@@ -3252,8 +3250,13 @@ function drawFinanceChart(){
     options:{ responsive:true, plugins:{legend:{position:'bottom',labels:{font:{size:10}}}}, scales:{ y:{ticks:{font:{size:10}}}, x:{ticks:{font:{size:10}}} } }
   });
 }
-function openFinance(id){
-  const f = id ? DB.finances.find(x=>x.id===id) : { id:uid(),type:'income',amount:'',date:todayStr(),category:'',note:'',scope:'shop' };
+function openFinance(id, preset){
+  const existing = id ? DB.finances.find(x=>x.id===id) : null;
+  if(existing && existing.source==='care'){
+    toast('门店收入来自 CRM，请到客户详情里修改消费记录');
+    return;
+  }
+  const f = existing || { id:uid(),type:preset==='shopExpense'?'expense':'expense',amount:'',date:todayStr(),category:'',note:'',scope:preset==='shopExpense'?'shop':'personal' };
   const scope = f.scope || 'shop';
   const isShop = scope==='shop';
   const cats = isShop ? (f.type==='income'?SHOP_INCOME_CATS:SHOP_EXPENSE_CATS) : (f.type==='income'?PERSONAL_INCOME_CATS:PERSONAL_EXPENSE_CATS);
@@ -3272,6 +3275,7 @@ function openFinance(id){
           <button class="btn ${f.type==='income'?'btn-primary':'btn-outline'} flex-1" onclick="setFinType('income')">💰 收入</button>
           <button class="btn ${f.type==='expense'?'btn-primary':'btn-outline'} flex-1" onclick="setFinType('expense')">💸 支出</button>
         </div>
+        <p class="text-xs text-[var(--text-faint)]">门店收入由 CRM 客户消费自动生成，这里只手动记录个人收支和门店支出。</p>
         <input type="hidden" id="f-type" value="${f.type}">
         <div><label>金额</label><input class="input" type="number" id="f-amount" value="${f.amount}" placeholder="0.00"></div>
         <div><label>分类</label><select class="select" id="f-category">
@@ -3290,25 +3294,36 @@ function openFinance(id){
 }
 function setFinScope(s){
   document.getElementById('f-scope').value=s;
+  if(s==='shop' && document.getElementById('f-type').value==='income'){
+    document.getElementById('f-type').value='expense';
+  }
   document.querySelectorAll('[onclick^="setFinScope"]').forEach(b=>{
     const ss=b.getAttribute('onclick').match(/'(\w+)'/)[1];
     b.className = 'btn '+(ss===s?'btn-primary':'btn-outline')+' flex-1';
   });
   // 更新分类选项
   const type = document.getElementById('f-type').value;
+  document.querySelectorAll('[onclick^="setFinType"]').forEach(b=>{
+    const tt=b.getAttribute('onclick').match(/'(\w+)'/)[1];
+    b.className = 'btn '+(tt===type?'btn-primary':'btn-outline')+' flex-1';
+  });
   const cats = s==='shop' ? (type==='income'?SHOP_INCOME_CATS:SHOP_EXPENSE_CATS) : (type==='income'?PERSONAL_INCOME_CATS:PERSONAL_EXPENSE_CATS);
   const sel = document.getElementById('f-category');
   const cur = sel.value;
   sel.innerHTML = cats.map(c=>`<option ${c===cur?'selected':''}>${c}</option>`).join('');
 }
 function setFinType(t){
+  const scope = document.getElementById('f-scope').value;
+  if(scope==='shop' && t==='income'){
+    toast('门店收入请在 CRM 客户消费里记录');
+    return;
+  }
   document.getElementById('f-type').value=t;
   document.querySelectorAll('[onclick^="setFinType"]').forEach(b=>{
     const tt=b.getAttribute('onclick').match(/'(\w+)'/)[1];
     b.className = 'btn '+(tt===t?'btn-primary':'btn-outline')+' flex-1';
   });
   // 更新分类选项
-  const scope = document.getElementById('f-scope').value;
   const cats = scope==='shop' ? (t==='income'?SHOP_INCOME_CATS:SHOP_EXPENSE_CATS) : (t==='income'?PERSONAL_INCOME_CATS:PERSONAL_EXPENSE_CATS);
   const sel = document.getElementById('f-category');
   const cur = sel.value;
@@ -3316,12 +3331,23 @@ function setFinType(t){
 }
 function saveFinance(id){
   let f = DB.finances.find(x=>x.id===id);
+  const scope = val('f-scope')||'shop';
+  const type = val('f-type');
+  if(scope==='shop' && type==='income'){
+    toast('门店收入请在 CRM 客户消费里记录');
+    return;
+  }
   if(!f){ f={id}; DB.finances.push(f); }
-  f.type=val('f-type'); f.amount=Number(val('f-amount'))||0; f.category=val('f-category'); f.date=val('f-date'); f.note=val('f-note');
-  f.scope=val('f-scope')||'shop';
+  f.type=type; f.amount=Number(val('f-amount'))||0; f.category=val('f-category'); f.date=val('f-date'); f.note=val('f-note');
+  f.scope=scope;
   saveData(); closeModal(); render(); toast('已记录 ✅');
 }
 function deleteFinance(id){
+  const f = DB.finances.find(x=>x.id===id);
+  if(f && f.source==='care'){
+    toast('CRM 自动收入请在客户详情里删除消费记录');
+    return;
+  }
   DB.finances = DB.finances.filter(f=>f.id!==id); saveData(); closeModal(); render(); toast('已删除');
 }
 
