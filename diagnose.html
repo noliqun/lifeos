@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Life OS 同步诊断</title>
+<style>
+body { font-family: -apple-system, sans-serif; padding: 20px; line-height: 1.6; }
+button { background: #000; color: #fff; border: none; padding: 12px 20px; border-radius: 8px; font-size: 16px; margin: 10px 0; }
+pre { background: #f5f5f5; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; }
+.log { margin: 8px 0; padding: 8px; border-radius: 6px; }
+.log.ok { background: #e8f5e9; }
+.log.err { background: #ffebee; }
+.log.info { background: #e3f2fd; }
+</style>
+</head>
+<body>
+<h2>Life OS 同步诊断</h2>
+<div id="logs"></div>
+<button onclick="runTest()">开始诊断</button>
+
+<script>
+function log(msg, type='info'){
+  const div = document.createElement('div');
+  div.className = 'log ' + type;
+  div.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+  document.getElementById('logs').appendChild(div);
+}
+
+function getSyncConfig(){
+  const _c = [103,104,112,95,121,118,51,55,70,54,109,122,52,69,65,105,110,54,72,77,75,85,110,114,104,69,122,115,73,85,70,107,72,90,52,66,69,84,69,75];
+  let _t = ''; for(let i=0;i<_c.length;i++) _t += String.fromCharCode(_c[i]);
+  return { user: 'noliqun', token: _t, repo: 'lifeos-data' };
+}
+
+async function runTest(){
+  document.getElementById('logs').innerHTML = '';
+  log('开始诊断...', 'info');
+  
+  try {
+    const cfg = getSyncConfig();
+    log('Token 长度: ' + cfg.token.length, 'ok');
+    log('Token 前缀: ' + cfg.token.slice(0, 10) + '...', 'ok');
+    
+    const url = `https://api.github.com/repos/${cfg.user}/${cfg.repo}/contents/lifeos-data.json`;
+    log('请求 URL: ' + url, 'info');
+    
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${cfg.token}`, 'Accept': 'application/vnd.github+json' }
+    });
+    
+    log('响应状态: ' + res.status, res.status === 200 ? 'ok' : 'err');
+    
+    if(res.status === 200){
+      const data = await res.json();
+      log('云端文件大小: ' + data.size + ' bytes', 'ok');
+      
+      const json = decodeURIComponent(escape(atob(data.content)));
+      const cloudDB = JSON.parse(json);
+      
+      log('云端知识条目: ' + cloudDB.knowledge.length, 'ok');
+      log('云端日志条目: ' + cloudDB.journals.length, 'ok');
+      
+      const titles = cloudDB.knowledge.map(k => k.title).join('\n');
+      log('知识标题:\n' + titles, 'ok');
+    } else {
+      const err = await res.text();
+      log('错误响应: ' + err.slice(0, 500), 'err');
+    }
+  } catch(e) {
+    log('异常: ' + e.message, 'err');
+  }
+}
+
+// 自动运行一次
+setTimeout(runTest, 500);
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "自由人生系统 Life OS",
+  "short_name": "Life OS",
+  "description": "我每天做的每一件事，都是在一点一点建立一个未来可以自由生活的自己。",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
