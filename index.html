@@ -3826,6 +3826,55 @@ function getEnglishLesson(day){
       '把今天美甲和外贸句子连成一段完整对话。'
   };
 }
+function renderEnglishMonthCalendar(selectedDate){
+  const selected = dateObjFromStr(selectedDate);
+  const y = selected.getFullYear();
+  const m = selected.getMonth();
+  const first = new Date(y, m, 1);
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  const startOffset = first.getDay();
+  const cells = [];
+  for(let i=0;i<startOffset;i++) cells.push(null);
+  for(let d=1; d<=daysInMonth; d++){
+    const date = dateStrFromObj(new Date(y, m, d));
+    const diff = Math.floor((dateObjFromStr(date)-dateObjFromStr(ENGLISH_COURSE_START))/86400000);
+    const inCourse = diff>=0 && diff<30;
+    const dayNo = inCourse ? diff+1 : null;
+    const done = (DB.learnLogs||[]).some(x=>x.id===`english-${date}`);
+    cells.push({date, d, inCourse, dayNo, done, selected:date===selectedDate});
+  }
+  return `
+    <div class="rounded-[26px] p-4 mb-4" style="background:linear-gradient(180deg,#fff7f8,#fff);border:1px solid #f4d7df;box-shadow:0 12px 30px rgba(190,120,140,.12);">
+      <div class="flex items-center justify-between mb-4">
+        <button class="w-10 h-10 rounded-full bg-white border border-pink-100 text-lg shadow-sm" onclick="changeEnglishCalendarMonth(-1)">◀</button>
+        <div class="text-center">
+          <div class="text-xl font-bold">${y}年${m+1}月</div>
+          <div class="text-xs text-[var(--text-faint)] mt-1">点日期查看当天课程</div>
+        </div>
+        <button class="w-10 h-10 rounded-full bg-white border border-pink-100 text-lg shadow-sm" onclick="changeEnglishCalendarMonth(1)">▶</button>
+      </div>
+      <div class="text-center text-xs text-[var(--text-faint)] mb-2" style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;">
+        ${['日','一','二','三','四','五','六'].map(w=>`<div class="py-1">${w}</div>`).join('')}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;">
+        ${cells.map(c=>c ? `
+          <button
+            class="relative rounded-2xl min-h-[54px] flex flex-col items-center justify-center border text-sm transition ${c.selected?'font-bold':'font-semibold'}"
+            style="min-height:56px;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px 2px;${c.selected
+              ? 'background:#d98996;color:white;border-color:#bd6d7b;box-shadow:0 6px 14px rgba(189,109,123,.24);'
+              : c.inCourse
+                ? 'background:#fff1f4;color:#2b2b2b;border-color:#f0c8d1;'
+                : 'background:#fff8f9;color:#c9b6bb;border-color:#f7e6ea;opacity:.55;'}"
+            ${c.inCourse?`onclick="selectEnglishStudyDate('${c.date}')"`:'disabled'}
+          >
+            <span class="text-base leading-none">${c.d}</span>
+            ${c.inCourse?`<span class="text-[10px] mt-1 ${c.selected?'text-white':'text-[#a55d6b]'}">Day${c.dayNo}</span>`:''}
+            ${c.done?`<span class="absolute bottom-1 w-1.5 h-1.5 rounded-full ${c.selected?'bg-white':'bg-[#d98996]'}"></span>`:''}
+          </button>
+        ` : '<div style="min-height:56px;"></div>' ).join('')}
+      </div>
+    </div>`;
+}
 function renderEnglishCalendarCard(el){
   const selectedDate = el._englishDate || todayStr();
   const day = englishDayByDate(selectedDate);
@@ -3833,24 +3882,18 @@ function renderEnglishCalendarCard(el){
   const lesson = getEnglishLesson(day);
   const isDone = (DB.learnLogs||[]).some(x=>x.id===`english-${lessonDate}`);
   const allSentences = [...lesson.nail, ...lesson.trade].map(x=>x[0]).join(' ');
-  const days = Array.from({length:30},(_,i)=>({day:i+1,date:addDaysStr(ENGLISH_COURSE_START,i)}));
   return `
-    <div class="card p-4 mb-4" style="border-color:#bfdbfe;background:linear-gradient(180deg,#eff6ff,#fff);">
+    <div class="card p-4 mb-4" style="border-color:#f4c9d3;background:linear-gradient(180deg,#fff7f8,#fff);">
       <div class="flex items-start justify-between gap-3 mb-3">
         <div>
-          <div class="tag tag-blue mb-2">英语日历 · Day${day} · ${fmtDateFull(lessonDate)}</div>
+          <div class="tag mb-2" style="background:#ffe4ea;color:#a04456;border-color:#f4c9d3;">英语日历 · Day${day} · ${fmtDateFull(lessonDate)}</div>
           <h3 class="text-lg font-semibold">${escape(lesson.title)}</h3>
           <p class="text-sm text-[var(--text-soft)] mt-1">从 2026年7月30日 开始，每天一页；主线是零基础、美甲英语、热敏纸外贸英语。</p>
         </div>
         <button class="btn ${isDone?'btn-outline':'btn-primary'} btn-sm" onclick="markEnglishLessonDone('${lessonDate}',${day})">${isDone?'已打卡':'今天打卡'}</button>
       </div>
       <div class="rounded-xl border border-blue-100 bg-white/80 p-3 mb-3 text-sm text-[var(--text-soft)]">今日目标：${escape(lesson.goal)} 学习顺序：听 2 遍、跟读 5 遍、最后完成今天练习。</div>
-      <div class="bg-white rounded-xl border border-[var(--border)] p-3 mb-3">
-        <div class="font-semibold mb-2">学习日历</div>
-        <div class="grid grid-cols-5 md:grid-cols-10 gap-1.5">
-          ${days.map(d=>`<button class="btn ${d.day===day?'btn-primary':'btn-outline'} btn-sm" onclick="selectEnglishStudyDate('${d.date}')"><span class="block text-xs">Day${d.day}</span><span class="block text-[10px]">${fmtDate(d.date)}</span></button>`).join('')}
-        </div>
-      </div>
+      ${renderEnglishMonthCalendar(lessonDate)}
       <div class="grid md:grid-cols-2 gap-3 text-sm">
         <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">今天单词</div>${lesson.words.map(w=>speakLine(w[0], w[1])).join('')}</div>
         <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">美甲英语</div>${lesson.nail.map(s=>speakLine(s[0], s[1])).join('')}</div>
@@ -3864,6 +3907,23 @@ function renderEnglishCalendarCard(el){
 function selectEnglishStudyDate(date){
   const el = document.getElementById('page-content');
   el._englishDate = date;
+  renderLearning(el);
+}
+function changeEnglishCalendarMonth(delta){
+  const el = document.getElementById('page-content');
+  const current = dateObjFromStr(el._englishDate || todayStr());
+  const next = new Date(current.getFullYear(), current.getMonth()+delta, 1);
+  const start = dateObjFromStr(ENGLISH_COURSE_START);
+  const end = dateObjFromStr(addDaysStr(ENGLISH_COURSE_START, 29));
+  if(next < new Date(start.getFullYear(), start.getMonth(), 1)){
+    el._englishDate = ENGLISH_COURSE_START;
+  }else if(next > new Date(end.getFullYear(), end.getMonth(), 1)){
+    el._englishDate = addDaysStr(ENGLISH_COURSE_START, 29);
+  }else{
+    const firstCourseDateInMonth = dateStrFromObj(next);
+    const day = englishDayByDate(firstCourseDateInMonth);
+    el._englishDate = addDaysStr(ENGLISH_COURSE_START, day-1);
+  }
   renderLearning(el);
 }
 function markEnglishLessonDone(date, day){

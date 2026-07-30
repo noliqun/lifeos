@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v22-english-calendar';
+const CACHE_NAME = 'lifeos-v23-pink-english-calendar';
 const FILES_TO_CACHE = [
   './',
   './index.html',
