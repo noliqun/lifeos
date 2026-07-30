@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v21-voice-finance-edit';
+const CACHE_NAME = 'lifeos-v22-english-calendar';
 const FILES_TO_CACHE = [
   './',
   './index.html',

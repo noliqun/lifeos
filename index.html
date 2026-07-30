@@ -3776,75 +3776,102 @@ function renderLearningCard(l){
 }
 
 
-function renderEnglishDay1Card(){
-  const words = [
-    ['nail','美甲'], ['manicure','手部美甲'], ['gel polish','甲油胶'], ['color','颜色'],
-    ['thermal paper','热敏纸'], ['sample','样品'], ['price','价格'], ['order','订单']
+const ENGLISH_COURSE_START = '2026-07-30';
+function dateObjFromStr(s){ const [y,m,d]=String(s).split('-').map(Number); return new Date(y, m-1, d); }
+function dateStrFromObj(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function addDaysStr(s, n){ const d=dateObjFromStr(s); d.setDate(d.getDate()+n); return dateStrFromObj(d); }
+function englishDayByDate(date){
+  const diff = Math.floor((dateObjFromStr(date)-dateObjFromStr(ENGLISH_COURSE_START))/86400000);
+  return Math.max(1, Math.min(30, diff+1));
+}
+function getEnglishLesson(day){
+  const stages = ['敢开口','确认需求','报价付款','预约交期','质量售后','复盘成交'];
+  const nailPool = [
+    [['Hello, how can I help you?','您好，我可以怎么帮您？'],['What color do you like?','您喜欢什么颜色？'],['Sure. We can do red gel polish.','当然，可以做红色甲油胶。']],
+    [['Do you like short nails or long nails?','您喜欢短甲还是长甲？'],['What style do you want?','您想要什么款式？'],['This color looks good on you.','这个颜色很适合您。']],
+    [['The basic manicure is 198 yuan.','基础美甲是198元。'],['This design is extra.','这个款式需要另外加钱。'],['You can pay by WeChat or Alipay.','您可以微信或支付宝付款。']],
+    [['Are you available this afternoon?','您今天下午有空吗？'],['I can book you for tomorrow.','我可以帮您约明天。'],['We need about two hours.','我们大概需要两个小时。']],
+    [['Please avoid water for two hours.','两小时内尽量不要碰水。'],['Please contact me if you have any problem.','有问题请联系我。'],['I hope you like it.','希望您喜欢。']],
+    [['Let me confirm the color first.','我先确认一下颜色。'],['This style is possible.','这个款式可以做。'],['The total is 268 yuan.','总共268元。']]
   ];
-  const sentences = [
-    ['Hello, how can I help you?','您好，我可以怎么帮您？'],
-    ['What color do you like?','您喜欢什么颜色？'],
-    ['We can send you samples.','我们可以给您寄样品。'],
-    ['May I know your order quantity?','请问您的订单数量是多少？'],
-    ['Sure. We can do red gel polish.','当然，可以做红色甲油胶。']
+  const tradePool = [
+    [['This is thermal paper.','这是热敏纸。'],['We can send you samples.','我们可以寄样品。'],['May I know your order quantity?','请问您的订单数量是多少？']],
+    [['What size do you need?','您需要什么尺寸？'],['How many rolls do you need?','您需要多少卷？'],['We have this size in stock.','这个尺寸我们有现货。']],
+    [['The price is 2 dollars per roll.','价格是每卷2美元。'],['Shipping is not included.','运费不包含。'],['We need a 30 percent deposit.','我们需要30%定金。']],
+    [['The delivery time is seven days.','交期是7天。'],['The goods will be ready tomorrow.','货明天准备好。'],['Can you confirm today?','您今天能确认吗？']],
+    [['The print is clear.','打印很清晰。'],['The paper is smooth.','纸张很顺滑。'],['Contact us if there is any problem.','有问题请联系我们。']],
+    [['Please send your requirements.','请发一下您的要求。'],['Let me confirm the price first.','我先确认一下价格。'],['We can offer a discount for big orders.','大订单可以优惠。']]
   ];
+  const wordPool = [
+    [['nail','美甲'],['manicure','手部美甲'],['gel polish','甲油胶'],['color','颜色'],['thermal paper','热敏纸'],['sample','样品'],['price','价格'],['order','订单']],
+    [['style','款式'],['shape','甲型'],['short','短'],['long','长'],['quantity','数量'],['roll','卷'],['carton','箱'],['size','尺寸']],
+    [['how much','多少钱'],['include','包含'],['shipping','运费'],['total','总计'],['cash','现金'],['deposit','定金'],['balance','尾款'],['payment','付款']],
+    [['today','今天'],['tomorrow','明天'],['appointment','预约'],['available','有空'],['delivery time','交期'],['ready','准备好'],['morning','上午'],['afternoon','下午']],
+    [['natural','自然'],['clean','干净'],['durable','耐用'],['smooth','顺滑'],['quality','质量'],['clear','清晰'],['print','打印'],['feedback','反馈']],
+    [['confirm','确认'],['possible','可以的'],['requirement','要求'],['stock','库存'],['discount','折扣'],['support','支持'],['service','服务'],['customer','顾客']]
+  ];
+  const idx = (day-1) % stages.length;
+  const round = Math.floor((day-1)/stages.length) + 1;
+  return {
+    title: `第${round}轮 · ${stages[idx]}：美甲门店 + 热敏纸外贸`,
+    goal: round===1 ? '先听懂、敢跟读，不要求语法完美。' : '少看中文，先听英文，再自己替换金额、颜色、数量说一遍。',
+    words: wordPool[idx],
+    nail: nailPool[idx],
+    trade: tradePool[idx],
+    exercise: idx===0 ? '模拟客户进店和外贸客户询盘，各说一句开场白。' :
+      idx===1 ? '把颜色、款式、尺寸、数量各替换一次，自己说一遍。' :
+      idx===2 ? '把价格换成你店里的真实金额，把外贸价格换成一个你熟悉的报价。' :
+      idx===3 ? '用今天句子练预约时间和交期，至少跟读 5 遍。' :
+      idx===4 ? '用今天句子练售后关怀，语气要慢、温柔、专业。' :
+      '把今天美甲和外贸句子连成一段完整对话。'
+  };
+}
+function renderEnglishCalendarCard(el){
+  const selectedDate = el._englishDate || todayStr();
+  const day = englishDayByDate(selectedDate);
+  const lessonDate = addDaysStr(ENGLISH_COURSE_START, day-1);
+  const lesson = getEnglishLesson(day);
+  const isDone = (DB.learnLogs||[]).some(x=>x.id===`english-${lessonDate}`);
+  const allSentences = [...lesson.nail, ...lesson.trade].map(x=>x[0]).join(' ');
+  const days = Array.from({length:30},(_,i)=>({day:i+1,date:addDaysStr(ENGLISH_COURSE_START,i)}));
   return `
     <div class="card p-4 mb-4" style="border-color:#bfdbfe;background:linear-gradient(180deg,#eff6ff,#fff);">
       <div class="flex items-start justify-between gap-3 mb-3">
         <div>
-          <div class="tag tag-blue mb-2">英语 · Day1</div>
-          <h3 class="text-lg font-semibold">零基础客户沟通英语：先会打招呼和介绍服务</h3>
-          <p class="text-sm text-[var(--text-soft)] mt-1">学习 30 分钟。目标：今天能听懂并跟读最简单的客户接待、确认需求句子。</p>
+          <div class="tag tag-blue mb-2">英语日历 · Day${day} · ${fmtDateFull(lessonDate)}</div>
+          <h3 class="text-lg font-semibold">${escape(lesson.title)}</h3>
+          <p class="text-sm text-[var(--text-soft)] mt-1">从 2026年7月30日 开始，每天一页；主线是零基础、美甲英语、热敏纸外贸英语。</p>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="markEnglishDay1Done()">今天打卡</button>
+        <button class="btn ${isDone?'btn-outline':'btn-primary'} btn-sm" onclick="markEnglishLessonDone('${lessonDate}',${day})">${isDone?'已打卡':'今天打卡'}</button>
       </div>
-      <div class="rounded-xl border border-blue-100 bg-white/80 p-3 mb-3 text-sm text-[var(--text-soft)]">
-        零基础学习顺序：先点 🔊 听 2 遍，再看中文意思，最后跟着读 5 遍。不会读没关系，今天只练“敢开口”。
+      <div class="rounded-xl border border-blue-100 bg-white/80 p-3 mb-3 text-sm text-[var(--text-soft)]">今日目标：${escape(lesson.goal)} 学习顺序：听 2 遍、跟读 5 遍、最后完成今天练习。</div>
+      <div class="bg-white rounded-xl border border-[var(--border)] p-3 mb-3">
+        <div class="font-semibold mb-2">学习日历</div>
+        <div class="grid grid-cols-5 md:grid-cols-10 gap-1.5">
+          ${days.map(d=>`<button class="btn ${d.day===day?'btn-primary':'btn-outline'} btn-sm" onclick="selectEnglishStudyDate('${d.date}')"><span class="block text-xs">Day${d.day}</span><span class="block text-[10px]">${fmtDate(d.date)}</span></button>`).join('')}
+        </div>
       </div>
       <div class="grid md:grid-cols-2 gap-3 text-sm">
-        <div class="bg-white rounded-xl border border-[var(--border)] p-3">
-          <div class="font-semibold mb-2">今天单词</div>
-          <div class="space-y-0 text-[var(--text-soft)]">
-            ${words.map(w=>speakLine(w[0], w[1])).join('')}
-          </div>
-        </div>
-        <div class="bg-white rounded-xl border border-[var(--border)] p-3">
-          <div class="font-semibold mb-2">今天句子</div>
-          <div class="space-y-0 text-[var(--text-soft)]">
-            ${sentences.slice(0,4).map(s=>speakLine(s[0], s[1])).join('')}
-          </div>
-        </div>
-        <div class="bg-white rounded-xl border border-[var(--border)] p-3">
-          <div class="font-semibold mb-2">今天听力</div>
-          <p class="text-[var(--text-soft)] mb-2">不用先找视频。先点下面按钮连续听，重点听 Hello / help / color / sample / price。</p>
-          <button class="btn btn-outline btn-sm" onclick="speakEnglish('Hello, how can I help you? What color do you like? We can send you samples. May I know your order quantity?')">🔊 连续听今天句子</button>
-        </div>
-        <div class="bg-white rounded-xl border border-[var(--border)] p-3">
-          <div class="font-semibold mb-2">今天口语</div>
-          <p class="text-[var(--text-soft)] mb-2">每个句子先听，再跟读 5 遍。读慢一点也可以，不要求完美。</p>
-          ${speakLine('Hello, how can I help you?','今天必须会说的第一句')}
-        </div>
-        <div class="bg-white rounded-xl border border-[var(--border)] p-3">
-          <div class="font-semibold mb-2">今天练习</div>
-          <p class="text-[var(--text-soft)] mb-2">模拟客户说：I want red nails. 你回答下面这句。</p>
-          ${speakLine('Sure. We can do red gel polish.','好的，可以做红色甲油胶。')}
-        </div>
-        <div class="bg-white rounded-xl border border-[var(--border)] p-3">
-          <div class="font-semibold mb-2">学习资料</div>
-          <div class="space-y-1">
-            <a class="text-[var(--blue)] block" target="_blank" href="https://search.bilibili.com/all?keyword=%E9%9B%B6%E5%9F%BA%E7%A1%80%E8%8B%B1%E8%AF%AD%E5%8F%A3%E8%AF%AD">B站：零基础英语口语</a>
-            <a class="text-[var(--blue)] block" target="_blank" href="https://www.xiaohongshu.com/search_result?keyword=%E7%BE%8E%E7%94%B2%E8%8B%B1%E8%AF%AD">小红书：美甲英语</a>
-            <a class="text-[var(--blue)] block" target="_blank" href="https://www.douyin.com/search/%E5%A4%96%E8%B4%B8%E8%8B%B1%E8%AF%AD%E5%8F%A3%E8%AF%AD">抖音：外贸英语口语</a>
-          </div>
-        </div>
+        <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">今天单词</div>${lesson.words.map(w=>speakLine(w[0], w[1])).join('')}</div>
+        <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">美甲英语</div>${lesson.nail.map(s=>speakLine(s[0], s[1])).join('')}</div>
+        <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">热敏纸外贸英语</div>${lesson.trade.map(s=>speakLine(s[0], s[1])).join('')}</div>
+        <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">今天听力</div><p class="text-[var(--text-soft)] mb-2">点一次连续听今天全部句子。</p><button class="btn btn-outline btn-sm" onclick="speakEnglish('${jsStr(allSentences)}')">🔊 连续听今天句子</button></div>
+        <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">今天练习</div><p class="text-[var(--text-soft)]">${escape(lesson.exercise)}</p></div>
+        <div class="bg-white rounded-xl border border-[var(--border)] p-3"><div class="font-semibold mb-2">学习资料</div><div class="space-y-1"><a class="text-[var(--blue)] block" target="_blank" href="https://search.bilibili.com/all?keyword=%E9%9B%B6%E5%9F%BA%E7%A1%80%E8%8B%B1%E8%AF%AD%E5%8F%A3%E8%AF%AD">B站：零基础英语口语</a><a class="text-[var(--blue)] block" target="_blank" href="https://www.xiaohongshu.com/search_result?keyword=%E7%BE%8E%E7%94%B2%E8%8B%B1%E8%AF%AD">小红书：美甲英语</a><a class="text-[var(--blue)] block" target="_blank" href="https://www.douyin.com/search/%E7%83%AD%E6%95%8F%E7%BA%B8%E5%A4%96%E8%B4%B8%E8%8B%B1%E8%AF%AD">抖音：热敏纸外贸英语</a></div></div>
       </div>
     </div>`;
 }
-function markEnglishDay1Done(){
+function selectEnglishStudyDate(date){
+  const el = document.getElementById('page-content');
+  el._englishDate = date;
+  renderLearning(el);
+}
+function markEnglishLessonDone(date, day){
   DB.learnLogs = DB.learnLogs || [];
-  const key = 'english-day1-'+todayStr();
-  if(!DB.learnLogs.some(x=>x.id===key)) DB.learnLogs.push({id:key, date:todayStr(), route:'英语', day:1, minutes:30, done:true, created:new Date().toISOString()});
-  saveData(); toast('Day1 已打卡 ✅');
+  const key = `english-${date}`;
+  if(!DB.learnLogs.some(x=>x.id===key)) DB.learnLogs.push({id:key, date, route:'热敏纸外贸+美甲英语', day, minutes:30, done:true, created:new Date().toISOString()});
+  saveData(); toast(`Day${day} 已打卡 ✅`);
+  renderLearning(document.getElementById('page-content'));
 }
 
 function renderLearning(el){
@@ -3886,7 +3913,7 @@ function renderLearning(el){
     </div>
     ` : ''}
 
-    ${(!cat || cat==='英语') ? renderEnglishDay1Card() : ''}
+    ${(!cat || cat==='英语') ? renderEnglishCalendarCard(el) : ''}
     ${list.length===0 ? emptyState('📚','还没有学习资料','<button class="btn btn-primary" onclick="openLearning()">+ 添加第一条</button>') :
     `<div class="grid md:grid-cols-2 gap-3">
       ${items.map(l=>renderLearningCard(l)).join('')}
