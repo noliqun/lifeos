@@ -789,21 +789,44 @@ function selectedRadio(name){
 function speakEnglish(text){
   if(!('speechSynthesis' in window)){ toast('当前浏览器不支持朗读'); return; }
   window.speechSynthesis.cancel();
+  window._speakRunId = (window._speakRunId||0) + 1;
+  const runId = window._speakRunId;
   const parts = String(text||'')
     .replace(/\s+/g,' ')
     .split(/(?<=[.!?])\s+|[；;]\s*/)
     .map(s=>s.trim())
     .filter(Boolean);
-  const queue = parts.length ? parts : [String(text||'')];
+  const queue = [];
+  (parts.length ? parts : [String(text||'')]).forEach(part=>{
+    const words = part.split(' ');
+    let chunk = '';
+    words.forEach(w=>{
+      const next = chunk ? chunk + ' ' + w : w;
+      if(next.length > 42 && chunk){ queue.push(chunk); chunk = w; }
+      else chunk = next;
+    });
+    if(chunk) queue.push(chunk);
+  });
   let i = 0;
   const speakNext = ()=>{
+    if(runId !== window._speakRunId) return;
     if(i >= queue.length) return;
-    const u = new SpeechSynthesisUtterance(queue[i++]);
+    const chunk = queue[i++];
+    const u = new SpeechSynthesisUtterance(chunk);
     u.lang = 'en-US';
-    u.rate = 0.78;
+    u.rate = 0.68;
     u.pitch = 1;
-    u.onend = ()=>setTimeout(speakNext, 120);
-    u.onerror = ()=>setTimeout(speakNext, 120);
+    let done = false;
+    const next = ()=>{
+      if(done) return;
+      done = true;
+      setTimeout(speakNext, 260);
+    };
+    const fallbackMs = Math.max(1800, chunk.split(' ').length * 520);
+    const timer = setTimeout(next, fallbackMs);
+    u.onend = ()=>{ clearTimeout(timer); next(); };
+    u.onerror = ()=>{ clearTimeout(timer); next(); };
+    window.speechSynthesis.resume();
     window.speechSynthesis.speak(u);
   };
   speakNext();
@@ -3262,7 +3285,7 @@ function renderFinance(el){
           <div class="text-xs font-medium text-[var(--green)]">合计 ${fmtMoney(todayShopIncome)}</div>
         </div>
         ${todayShopIncomeRecords.length>0 ? `<div class="space-y-1">${todayShopIncomeRecords.map(f=>`
-          <div class="grid grid-cols-[56px_1fr_1fr_64px_70px] gap-2 items-center text-sm py-1">
+          <div class="grid grid-cols-[52px_1fr_1fr_54px_64px_42px] gap-1.5 items-center text-sm py-1">
             <span class="text-xs text-[var(--text-faint)]">${fmtDate(f.date)}</span>
             <span class="text-xs truncate">
               ${escape(f.clientName || clientDisplayName(f.clientId) || '-')}
@@ -3272,17 +3295,19 @@ function renderFinance(el){
             <span class="tag tag-green text-xs truncate">${escape(f.project || f.category || '')}</span>
             <span class="text-xs text-[var(--text-faint)] truncate">${escape(f.paymentMethod||'')}</span>
             <span class="font-medium text-[var(--green)]">${fmtMoney(f.amount)}</span>
+            <button class="btn btn-ghost btn-sm" onclick="editFinanceIncome('${f.id}')">改</button>
           </div>`).join('')}</div>` : '<p class="text-sm text-[var(--text-faint)] text-center py-2">今天还没有客户消费流水</p>'}
       </div>
       <div class="border-t border-[var(--border)] pt-3">
         <div class="text-xs text-[var(--text-faint)] mb-2">本月门店收入明细（自动来自 CRM 消费）</div>
         ${monthShop.filter(f=>f.type==='income').length>0 ? `<div class="space-y-1">${monthShop.filter(f=>f.type==='income').sort((a,b)=>b.date.localeCompare(a.date)).map(f=>`
-          <div class="grid grid-cols-[56px_1fr_1fr_70px_70px] gap-2 items-center text-sm py-1">
+          <div class="grid grid-cols-[52px_1fr_1fr_54px_64px_42px] gap-1.5 items-center text-sm py-1">
             <span class="text-xs text-[var(--text-faint)] w-16">${fmtDate(f.date)}</span>
             <span class="text-xs truncate">${escape(f.clientName || clientDisplayName(f.clientId) || '-')}${f.clientWechat?` · ${escape(f.clientWechat)}`:''}${f.clientType==='会员'?' · 会员':''}</span>
             <span class="tag tag-green text-xs truncate">${escape(f.project || f.category || '')}</span>
             <span class="text-xs text-[var(--text-faint)] truncate">${escape(f.paymentMethod||'')}</span>
             <span class="font-medium text-[var(--green)]">${fmtMoney(f.amount)}</span>
+            <button class="btn btn-ghost btn-sm" onclick="editFinanceIncome('${f.id}')">改</button>
           </div>`).join('')}</div>` : '<p class="text-sm text-[var(--text-faint)] text-center py-2">暂无门店收入</p>'}
       </div>
       <div class="border-t border-[var(--border)] pt-3 mt-2">
@@ -3370,10 +3395,21 @@ function drawFinanceChart(){
     options:{ responsive:true, plugins:{legend:{position:'bottom',labels:{font:{size:10}}}}, scales:{ y:{ticks:{font:{size:10}}}, x:{ticks:{font:{size:10}}} } }
   });
 }
+function editFinanceIncome(id){
+  const f = DB.finances.find(x=>x.id===id);
+  if(!f){ toast('没有找到这条收入'); return; }
+  if(f.source==='care' && f.refId){
+    const care = DB.cares.find(x=>x.id===f.refId);
+    if(care){ editCare(f.refId); return; }
+    toast('原消费记录不存在，请检查客户记录');
+    return;
+  }
+  openFinance(id);
+}
 function openFinance(id, preset){
   const existing = id ? DB.finances.find(x=>x.id===id) : null;
   if(existing && existing.source==='care'){
-    toast('门店收入来自 CRM，请到客户详情里修改消费记录');
+    editFinanceIncome(id);
     return;
   }
   const f = existing || { id:uid(),type:preset==='shopExpense'?'expense':'expense',amount:'',date:todayStr(),category:'',note:'',scope:preset==='shopExpense'?'shop':'personal' };
