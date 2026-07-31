@@ -786,49 +786,110 @@ function renderStatusOptions(name, current, options){
 function selectedRadio(name){
   return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 }
+/* ---- 高质量英文语音引擎选择 ---- */
+let _bestEnVoice = null;
+function pickBestEnVoice(){
+  const voices = window.speechSynthesis.getVoices();
+  if(!voices || voices.length === 0) return null;
+  const pref = [
+    'Google US English',
+    'Microsoft Aria Online (Natural) - English (United States)',
+    'Microsoft Jenny Online (Natural) - English (United States)',
+    'Samantha',
+    'Microsoft Zira - English (United States)',
+    'Google UK English Female'
+  ];
+  for(const name of pref){
+    const v = voices.find(v=>v.name === name && v.lang.startsWith('en'));
+    if(v) return v;
+  }
+  const enVoices = voices.filter(v=>v.lang && v.lang.startsWith('en'));
+  if(enVoices.length === 0) return null;
+  const natural = enVoices.find(v=>/natural|aria|jenny|samantha|google/i.test(v.name));
+  return natural || enVoices[0];
+}
+if('speechSynthesis' in window){
+  window.speechSynthesis.onvoiceschanged = ()=>{ _bestEnVoice = pickBestEnVoice(); };
+  _bestEnVoice = pickBestEnVoice();
+}
 function speakEnglish(text){
   if(!('speechSynthesis' in window)){ toast('当前浏览器不支持朗读'); return; }
   window.speechSynthesis.cancel();
   window._speakRunId = (window._speakRunId||0) + 1;
   const runId = window._speakRunId;
-  const parts = String(text||'')
+
+  /* 1) 先按句号/问号/感叹号切，再按逗号/分号细切，保证每段不超过 ~10 词 */
+  const rawParts = String(text||'')
     .replace(/\s+/g,' ')
     .split(/(?<=[.!?])\s+|[；;]\s*/)
     .map(s=>s.trim())
     .filter(Boolean);
   const queue = [];
-  (parts.length ? parts : [String(text||'')]).forEach(part=>{
-    const words = part.split(' ');
+  (rawParts.length ? rawParts : [String(text||'')]).forEach(part=>{
+    const clauses = part.split(/,\s*/);
     let chunk = '';
-    words.forEach(w=>{
-      const next = chunk ? chunk + ' ' + w : w;
-      if(next.length > 42 && chunk){ queue.push(chunk); chunk = w; }
-      else chunk = next;
+    clauses.forEach((clause,idx)=>{
+      const candidate = chunk ? chunk + ', ' + clause : clause;
+      const wordCount = candidate.split(' ').length;
+      if(wordCount > 10 && chunk){
+        queue.push(chunk.trim());
+        chunk = clause;
+      } else {
+        chunk = candidate;
+      }
     });
-    if(chunk) queue.push(chunk);
+    if(chunk.trim()) queue.push(chunk.trim());
   });
+
+  /* 2) resume() 心跳：Chrome 15 秒截断 bug 的保活 */
+  let keepAlive = null;
+  const startHeartbeat = ()=>{
+    keepAlive = setInterval(()=>{
+      if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
+      if(window.speechSynthesis.speaking){
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    }, 8000);
+  };
+  const stopHeartbeat = ()=>{ if(keepAlive){ clearInterval(keepAlive); keepAlive = null; } };
+
   let i = 0;
   const speakNext = ()=>{
-    if(runId !== window._speakRunId) return;
-    if(i >= queue.length) return;
+    if(runId !== window._speakRunId){ stopHeartbeat(); return; }
+    if(i >= queue.length){ stopHeartbeat(); return; }
     const chunk = queue[i++];
     const u = new SpeechSynthesisUtterance(chunk);
     u.lang = 'en-US';
-    u.rate = 0.68;
-    u.pitch = 1;
+    /* 3) 智能语速：疑问句稍慢、短句稍快，整体自然 */
+    const wc = chunk.split(' ').length;
+    const isQuestion = /\?\s*$/.test(chunk) || /^(wh|how|do|does|can|could|would|will|is|are|am)\b/i.test(chunk);
+    u.rate = isQuestion ? 0.72 : (wc <= 4 ? 0.78 : 0.75);
+    u.pitch = 1.0;
+    u.volume = 1.0;
+    /* 4) 选用最佳语音 */
+    if(_bestEnVoice){
+      u.voice = _bestEnVoice;
+    } else {
+      _bestEnVoice = pickBestEnVoice();
+      if(_bestEnVoice) u.voice = _bestEnVoice;
+    }
     let done = false;
     const next = ()=>{
       if(done) return;
       done = true;
-      setTimeout(speakNext, 260);
+      /* 5) 缩短段间停顿到 90ms，让衔接更流畅 */
+      setTimeout(speakNext, 90);
     };
-    const fallbackMs = Math.max(1800, chunk.split(' ').length * 520);
-    const timer = setTimeout(next, fallbackMs);
+    /* 6) 更精准的兜底计时器：按词数 × (600ms / rate) 估算 */
+    const estimatedMs = Math.max(1500, Math.ceil(wc * 600 / u.rate));
+    const timer = setTimeout(next, estimatedMs);
     u.onend = ()=>{ clearTimeout(timer); next(); };
     u.onerror = ()=>{ clearTimeout(timer); next(); };
-    window.speechSynthesis.resume();
     window.speechSynthesis.speak(u);
   };
+
+  startHeartbeat();
   speakNext();
 }
 function speakLine(en, zh){
