@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v29-vercel-edge-tts';
+const CACHE_NAME = 'lifeos-v30-webspeech-optimized';
 const FILES_TO_CACHE = [
   './',
   './index.html',
