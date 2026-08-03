@@ -786,69 +786,81 @@ function renderStatusOptions(name, current, options){
 function selectedRadio(name){
   return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 }
-/* ---- 英文语音朗读：Web Speech API 深度优化版 ---- */
+/* ---- 英文语音朗读：Google Translate TTS（自然发音）+ Web Speech API 静默兜底 ---- */
 let _bestEnVoice = null;
-let _voiceQualityChecked = false;
-
 function pickBestEnVoice(){
   const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
   if(!voices || voices.length === 0) return null;
-  /* 按质量排序的优先级列表 */
-  const pref = [
-    'Google US English',
-    'Microsoft Aria Online (Natural) - English (United States)',
-    'Microsoft Jenny Online (Natural) - English (United States)',
-    'Microsoft Guy Online (Natural) - English (United States)',
-    'Samantha',
-    'Google UK English Female',
-    'Microsoft Zira - English (United States)',
-    'Microsoft David - English (United States)',
-    'Karen',
-    'Moira',
-    'Tessa'
-  ];
-  for(const name of pref){
-    const v = voices.find(v=>v.name === name && v.lang.startsWith('en'));
-    if(v) return v;
-  }
+  const pref = ['Google US English','Microsoft Aria Online (Natural) - English (United States)','Microsoft Jenny Online (Natural) - English (United States)','Microsoft Guy Online (Natural) - English (United States)','Samantha','Google UK English Female','Microsoft Zira - English (United States)','Karen','Moira','Tessa'];
+  for(const name of pref){ const v = voices.find(v=>v.name === name && v.lang.startsWith('en')); if(v) return v; }
   const enVoices = voices.filter(v=>v.lang && v.lang.startsWith('en'));
   if(enVoices.length === 0) return null;
-  const natural = enVoices.find(v=>/natural|aria|jenny|samantha|google/i.test(v.name));
-  return natural || enVoices[0];
+  return enVoices.find(v=>/natural|aria|jenny|samantha|google/i.test(v.name)) || enVoices[0];
 }
-
-/* 检查语音质量，如果只有低质量语音则提示用户下载 */
-function checkVoiceQuality(){
-  if(_voiceQualityChecked) return;
-  _voiceQualityChecked = true;
-  const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
-  const enVoices = voices.filter(v=>v.lang && v.lang.startsWith('en'));
-  /* 检查是否有高质量语音 */
-  const hasHighQuality = enVoices.some(v=>
-    /google|natural|aria|jenny|samantha|guy/i.test(v.name)
-  );
-  if(!hasHighQuality && enVoices.length > 0){
-    /* 延迟提示，避免页面加载时弹窗 */
-    setTimeout(()=>{
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-      if(isIOS){
-        toast('💡 提示：设置→辅助功能→朗读内容→声音，下载"Samantha(增强版)"可获得更自然的英语发音');
-      }
-    }, 5000);
-  }
-}
-
 if('speechSynthesis' in window){
-  window.speechSynthesis.onvoiceschanged = ()=>{ _bestEnVoice = pickBestEnVoice(); checkVoiceQuality(); };
-  _bestEnVoice = pickBestEnVoice();
-  checkVoiceQuality();
+  const iv = ()=>{ _bestEnVoice = pickBestEnVoice(); };
+  window.speechSynthesis.onvoiceschanged = iv;
+  iv();
+  setTimeout(iv, 500);
+  setTimeout(iv, 1500);
 }
 
-function speakWithWebAPI(text){
-  if(!('speechSynthesis' in window)){ toast('当前浏览器不支持朗读'); return; }
+/* 文本切分：按句子拆分，超长句按逗号再拆，最终控制在 ≤190 字符以适配 Google TTS */
+function splitForTTS(text){
+  const clean = String(text||'').replace(/\s+/g,' ').trim();
+  if(!clean) return [];
+  const sentences = clean.split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
+  const chunks = [];
+  sentences.forEach(sent=>{
+    if(sent.length <= 190){ chunks.push(sent); return; }
+    const parts = sent.split(/,\s*/);
+    let buf = '';
+    parts.forEach(p=>{
+      const candidate = buf ? buf + ', ' + p : p;
+      if(candidate.length > 190 && buf){ chunks.push(buf.trim()); buf = p; }
+      else buf = candidate;
+    });
+    if(buf.trim()) chunks.push(buf.trim());
+  });
+  /* 最终保底：任何超长段按词硬切 */
+  const final = [];
+  chunks.forEach(c=>{
+    if(c.length <= 190){ final.push(c); return; }
+    const words = c.split(' '); let w = '';
+    words.forEach(word=>{
+      if((w+' '+word).length > 190 && w){ final.push(w.trim()); w = word; }
+      else w = w ? w+' '+word : word;
+    });
+    if(w.trim()) final.push(w.trim());
+  });
+  return final;
+}
+
+/* Google Translate TTS：通过 Audio 元素播放，无需认证，自然真人发音 */
+function playGoogleChunk(chunk, runId){
+  return new Promise((resolve, reject)=>{
+    const audio = new Audio();
+    window._currentTTSAudio = audio;
+    let settled = false;
+    const wc = chunk.split(' ').length;
+    const loadTimer = setTimeout(()=>{ if(!settled){ settled=true; try{audio.pause();}catch(e){} reject(new Error('load_timeout')); } }, 6000);
+    audio.onplaying = ()=>{
+      clearTimeout(loadTimer);
+      const maxDur = Math.max(8000, wc * 800);
+      setTimeout(()=>{ if(!settled){ settled=true; try{audio.pause();}catch(e){} resolve(); } }, maxDur);
+    };
+    audio.onended = ()=>{ if(!settled){ settled=true; clearTimeout(loadTimer); resolve(); } };
+    audio.onerror = ()=>{ if(!settled){ settled=true; clearTimeout(loadTimer); reject(new Error('audio_err')); } };
+    audio.onabort = ()=>{ if(!settled){ settled=true; clearTimeout(loadTimer); resolve(); } };
+    audio.src = 'https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=' + encodeURIComponent(chunk);
+    audio.play().catch(e=>{ if(!settled){ settled=true; clearTimeout(loadTimer); reject(e); } });
+  });
+}
+
+/* Web Speech API 兜底：优化分句 + keepalive 防卡顿 */
+function speakWithWebAPI(text, runId){
+  if(!('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
-  window._speakRunId = (window._speakRunId||0) + 1;
-  const runId = window._speakRunId;
   const rawParts = String(text||'').replace(/\s+/g,' ').split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
   const queue = [];
   (rawParts.length ? rawParts : [String(text||'')]).forEach(part=>{
@@ -856,7 +868,7 @@ function speakWithWebAPI(text){
     let chunk = '';
     clauses.forEach(clause=>{
       const candidate = chunk ? chunk + ', ' + clause : clause;
-      if(candidate.split(' ').length > 10 && chunk){ queue.push(chunk.trim()); chunk = clause; }
+      if(candidate.split(' ').length > 8 && chunk){ queue.push(chunk.trim()); chunk = clause; }
       else chunk = candidate;
     });
     if(chunk.trim()) queue.push(chunk.trim());
@@ -864,7 +876,7 @@ function speakWithWebAPI(text){
   let keepAlive = setInterval(()=>{
     if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
     if(window.speechSynthesis.speaking){ window.speechSynthesis.pause(); window.speechSynthesis.resume(); }
-  }, 8000);
+  }, 10000);
   let i = 0;
   const speakNext = ()=>{
     if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
@@ -873,16 +885,15 @@ function speakWithWebAPI(text){
     const u = new SpeechSynthesisUtterance(chunk);
     u.lang = 'en-US';
     const wc = chunk.split(' ').length;
-    const isQuestion = /\?\s*$/.test(chunk) || /^(wh|how|do|does|can|could|would|will|is|are|am)\b/i.test(chunk);
-    const isExclamation = /!\s*$/.test(chunk);
-    /* 更自然的语速：疑问句稍慢带升调，感叹句稍快，陈述句中等 */
-    u.rate = isQuestion ? 0.70 : (isExclamation ? 0.80 : (wc <= 4 ? 0.82 : 0.78));
-    u.pitch = isQuestion ? 1.08 : (isExclamation ? 1.05 : 1.0);
+    const isQ = /\?\s*$/.test(chunk) || /^(wh|how|do|does|can|could|would|will|is|are|am)\b/i.test(chunk);
+    const isE = /!\s*$/.test(chunk);
+    u.rate = isQ ? 0.88 : (isE ? 0.92 : (wc <= 4 ? 0.90 : 0.88));
+    u.pitch = isQ ? 1.06 : (isE ? 1.04 : 1.0);
     u.volume = 1.0;
     if(_bestEnVoice){ u.voice = _bestEnVoice; } else { _bestEnVoice = pickBestEnVoice(); if(_bestEnVoice) u.voice = _bestEnVoice; }
     let done = false;
-    const next = ()=>{ if(done) return; done = true; setTimeout(speakNext, 120); };
-    const timer = setTimeout(next, Math.max(1500, Math.ceil(wc * 600 / u.rate)));
+    const next = ()=>{ if(done) return; done = true; setTimeout(speakNext, 80); };
+    const timer = setTimeout(next, Math.max(2500, Math.ceil(wc * 500 / u.rate)));
     u.onend = ()=>{ clearTimeout(timer); next(); };
     u.onerror = ()=>{ clearTimeout(timer); next(); };
     window.speechSynthesis.speak(u);
@@ -890,14 +901,27 @@ function speakWithWebAPI(text){
   speakNext();
 }
 
-/* 主朗读函数 */
+/* 主朗读函数：先试 Google TTS（自然发音），失败静默切换 Web Speech API，不弹任何提示 */
 async function speakEnglish(text){
   if(!text) return;
   if(window._currentTTSAudio){ try{ window._currentTTSAudio.pause(); }catch(e){} window._currentTTSAudio = null; }
   if('speechSynthesis' in window) window.speechSynthesis.cancel();
   window._speakRunId = (window._speakRunId||0) + 1;
   const runId = window._speakRunId;
-  speakWithWebAPI(text);
+  const chunks = splitForTTS(text);
+  let playedUntil = 0;
+  for(let i=0; i<chunks.length; i++){
+    if(runId !== window._speakRunId) return;
+    try{
+      await playGoogleChunk(chunks[i], runId);
+      playedUntil = i + 1;
+      if(i < chunks.length - 1 && runId === window._speakRunId) await new Promise(r=>setTimeout(r, 120));
+    }catch(e){ break; }
+  }
+  if(runId !== window._speakRunId) return;
+  if(playedUntil >= chunks.length) return;
+  const remaining = chunks.slice(playedUntil).join(' ');
+  if(remaining) speakWithWebAPI(remaining, runId);
 }
 function speakLine(en, zh){
   return `<div class="flex items-center justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">

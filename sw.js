@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v30-webspeech-optimized';
+const CACHE_NAME = 'lifeos-v35-google-tts';
 const FILES_TO_CACHE = [
   './',
   './index.html',
