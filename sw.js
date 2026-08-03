@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v25-puter-neural-tts';
+const CACHE_NAME = 'lifeos-v26-streamelements-tts';
 const FILES_TO_CACHE = [
   './',
   './index.html',

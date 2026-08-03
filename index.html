@@ -15,7 +15,6 @@
 <script>if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(()=>{})})}</script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://js.puter.com/v2/"></script>
 <style>
   :root{
     --bg:#ffffff; --bg-soft:#fafafa; --bg-card:#ffffff;
@@ -787,9 +786,8 @@ function renderStatusOptions(name, current, options){
 function selectedRadio(name){
   return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 }
-/* ---- 英文语音朗读：Puter.js 神经网络语音（Gemini/Polly）+ Web Speech API 兜底 ---- */
+/* ---- 英文语音朗读：StreamElements TTS（AWS Polly 神经语音）+ Web Speech API 兜底 ---- */
 let _bestEnVoice = null;
-let _puterTTSAvailable = null;
 function pickBestEnVoice(){
   const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
   if(!voices || voices.length === 0) return null;
@@ -859,7 +857,7 @@ function speakWithWebAPI(text){
   speakNext();
 }
 
-/* 主朗读函数：优先 Puter.js 神经网络语音，失败自动降级到 Web Speech API */
+/* 主朗读函数：优先 StreamElements TTS（AWS Polly 神经语音），失败降级到 Web Speech API */
 async function speakEnglish(text){
   if(!text) return;
   /* 停止当前所有播放 */
@@ -868,62 +866,46 @@ async function speakEnglish(text){
   window._speakRunId = (window._speakRunId||0) + 1;
   const runId = window._speakRunId;
 
-  /* 检测 Puter.js 是否可用 */
-  if(_puterTTSAvailable === null){
-    _puterTTSAvailable = (typeof puter !== 'undefined' && puter.ai && typeof puter.ai.txt2speech === 'function');
-  }
-
   /* 分句 */
   const sentences = String(text||'').replace(/\s+/g,' ').split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
   const queue = sentences.length ? sentences : [String(text||'')];
 
-  if(_puterTTSAvailable){
-    toast('🎙️ 正在生成高质量语音...');
-    let puterFailed = false;
-    for(let idx=0; idx<queue.length; idx++){
-      if(runId !== window._speakRunId || puterFailed) break;
-      const sentence = queue[idx];
-      try{
-        let audio = null;
-        /* 优先 Gemini TTS：最自然，可用自然语言控制说话风格 */
-        try{
-          audio = await puter.ai.txt2speech(sentence, {
-            provider: 'gemini',
-            voice: 'Puck',
-            instructions: 'Speak clearly and naturally at a moderate pace, as if teaching English to a beginner. Use standard American English pronunciation with a friendly, engaging tone.'
-          });
-        }catch(geminiErr){
-          /* Gemini 失败 → AWS Polly 神经语音（Joanna，美式女声，非常自然） */
-          audio = await puter.ai.txt2speech(sentence, {
-            voice: 'Joanna',
-            engine: 'neural',
-            language: 'en-US'
-          });
-        }
-        if(runId !== window._speakRunId) break;
-        window._currentTTSAudio = audio;
-        /* 等待这一句播放完再播下一句 */
-        await new Promise(resolve=>{
-          let settled = false;
-          const done = ()=>{ if(!settled){ settled=true; resolve(); } };
-          audio.onended = done;
-          audio.onerror = done;
-          audio.play().catch(done);
+  /* StreamElements TTS：AWS Polly 神经语音，免费、无需登录、无弹窗 */
+  const SE_VOICE = 'Joanna'; /* 美式女声，发音清晰自然，适合英语教学 */
+  let seFailed = false;
+
+  for(let idx=0; idx<queue.length; idx++){
+    if(runId !== window._speakRunId || seFailed) break;
+    const sentence = queue[idx];
+    try{
+      const url = 'https://api.streamelements.com/kappa/v2/speech?voice=' + encodeURIComponent(SE_VOICE) + '&text=' + encodeURIComponent(sentence);
+      const audio = new Audio(url);
+      window._currentTTSAudio = audio;
+      /* 等待这一句播放完再播下一句 */
+      await new Promise(resolve=>{
+        let settled = false;
+        const done = ()=>{ if(!settled){ settled=true; resolve(); } };
+        audio.onended = done;
+        audio.onerror = ()=>{ seFailed = true; done(); };
+        audio.play().then(()=>{
+          /* 兜底超时：如果音频卡住，按词数估算最长等待时间 */
           const wc = sentence.split(' ').length;
-          setTimeout(done, Math.max(5000, wc * 900));
+          setTimeout(done, Math.max(8000, wc * 1200));
+        }).catch(()=>{
+          seFailed = true;
+          done();
         });
-      }catch(e){
-        console.warn('Puter TTS error, falling back to Web Speech API:', e);
-        _puterTTSAvailable = false;
-        puterFailed = true;
-      }
+      });
+    }catch(e){
+      console.warn('StreamElements TTS error:', e);
+      seFailed = true;
     }
-    if(!puterFailed) return;
-    toast('网络语音不可用，切换本地语音...');
   }
 
-  /* 兜底：Web Speech API */
-  speakWithWebAPI(text);
+  if(seFailed){
+    toast('网络语音不可用，切换本地语音...');
+    speakWithWebAPI(text);
+  }
 }
 function speakLine(en, zh){
   return `<div class="flex items-center justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">
