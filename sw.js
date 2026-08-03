@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v27-se-tts-fetch-blob';
+const CACHE_NAME = 'lifeos-v28-edge-tts-websocket';
 const FILES_TO_CACHE = [
   './',
   './index.html',

@@ -786,7 +786,108 @@ function renderStatusOptions(name, current, options){
 function selectedRadio(name){
   return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 }
-/* ---- 英文语音朗读：StreamElements TTS（AWS Polly 神经语音）+ Web Speech API 兜底 ---- */
+/* ---- 英文语音朗读：Microsoft Edge TTS（WebSocket，神经网络语音）+ Web Speech API 兜底 ---- */
+const EDGE_TTS_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+const EDGE_TTS_WSS = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1';
+const EDGE_TTS_VOICE = 'en-US-AriaNeural'; /* 微软 Aria 神经语音，自然有感情 */
+const EDGE_TTS_OUTPUT = 'audio-24khz-48kbitrate-mono-mp3';
+const WIN_EPOCH = 11644473600;
+
+/* 生成 Sec-MS-GEC 签名（Edge TTS 需要） */
+function edgeTtsGenSecMsGec(){
+  const now = Math.floor(Date.now() / 1000);
+  let ticks = now + WIN_EPOCH;
+  ticks -= ticks % 300;
+  ticks = Math.floor(ticks * 1e7);
+  const str = ticks + EDGE_TTS_TOKEN;
+  /* 用 SubtleCrypto 做 SHA-256（浏览器原生，无需外部库） */
+  return crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)).then(buf=>{
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();
+  });
+}
+
+/* 生成 UUID（无连字符，大写） */
+function edgeTtsUuid(){
+  if(crypto && crypto.randomUUID){
+    return crypto.randomUUID().replaceAll('-','').toUpperCase();
+  }
+  return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g,c=>{
+    const r = Math.random()*16|0; const v = c==='x'?r:(r&0x3|0x8);
+    return v.toString(16);
+  }).toUpperCase();
+}
+
+/* 构建 WebSocket URL */
+async function edgeTtsBuildUrl(){
+  const secMsGec = await edgeTtsGenSecMsGec();
+  const connId = edgeTtsUuid();
+  return `${EDGE_TTS_WSS}?TrustedClientToken=${EDGE_TTS_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=1-130.0.2849.68&ConnectionId=${connId}`;
+}
+
+/* 通过 WebSocket 请求 Edge TTS，返回音频 Blob */
+function edgeTtsSynthesize(text, voice){
+  return new Promise(async (resolve, reject)=>{
+    let url;
+    try{
+      url = await edgeTtsBuildUrl();
+    }catch(e){ return reject(e); }
+
+    const socket = new WebSocket(url);
+    socket.binaryType = 'arraybuffer';
+    const audioChunks = [];
+    let settled = false;
+
+    const timeout = setTimeout(()=>{
+      if(!settled){ settled = true; try{socket.close();}catch(e){} reject(new Error('Edge TTS timeout')); }
+    }, 15000);
+
+    socket.addEventListener('error', (e)=>{
+      if(!settled){ settled = true; clearTimeout(timeout); reject(new Error('WebSocket error')); }
+    });
+
+    socket.addEventListener('open', ()=>{
+      /* 发送配置指令 */
+      const cmd = `X-Timestamp:${new Date()}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":false,"wordBoundaryEnabled":true},"outputFormat":"${EDGE_TTS_OUTPUT}"}}}}\r\n`;
+      socket.send(cmd);
+
+      /* 发送 SSML 语音合成请求 */
+      const reqId = edgeTtsUuid();
+      const ssml = `X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${new Date()}Z\r\nPath:ssml\r\n\r\n<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'><voice name='${voice}'><prosody pitch='+0Hz' rate='-10%' volume='+0%'>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</prosody></voice></speak>`;
+      socket.send(ssml);
+    });
+
+    socket.addEventListener('message', (event)=>{
+      if(event.data instanceof ArrayBuffer){
+        const buf = new Uint8Array(event.data);
+        if(buf.length >= 2){
+          const headerLen = (buf[0] << 8) | (buf[1] + 2);
+          const header = new TextDecoder().decode(buf.subarray(0, headerLen));
+          if(header.indexOf('Path:audio') === -1) return;
+          const payload = buf.subarray(headerLen);
+          audioChunks.push(new Uint8Array(payload));
+        }
+      }else if(typeof event.data === 'string'){
+        if(event.data.indexOf('Path:turn.end') !== -1){
+          if(!settled){
+            settled = true;
+            clearTimeout(timeout);
+            try{socket.close();}catch(e){}
+            if(audioChunks.length === 0){
+              reject(new Error('No audio data received'));
+            }else{
+              const totalLen = audioChunks.reduce((s,c)=>s+c.length, 0);
+              const merged = new Uint8Array(totalLen);
+              let offset = 0;
+              audioChunks.forEach(c=>{ merged.set(c, offset); offset += c.length; });
+              resolve(new Blob([merged], {type: 'audio/mpeg'}));
+            }
+          }
+        }
+      }
+    });
+  });
+}
+
 let _bestEnVoice = null;
 function pickBestEnVoice(){
   const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
@@ -813,7 +914,7 @@ if('speechSynthesis' in window){
   _bestEnVoice = pickBestEnVoice();
 }
 
-/* Web Speech API 兜底（网络不可用时使用） */
+/* Web Speech API 兜底 */
 function speakWithWebAPI(text){
   if(!('speechSynthesis' in window)){ toast('当前浏览器不支持朗读'); return; }
   window.speechSynthesis.cancel();
@@ -857,10 +958,9 @@ function speakWithWebAPI(text){
   speakNext();
 }
 
-/* 主朗读函数：优先 StreamElements TTS（AWS Polly 神经语音），失败降级到 Web Speech API */
+/* 主朗读函数：优先 Edge TTS（WebSocket 神经网络语音），失败降级到 Web Speech API */
 async function speakEnglish(text){
   if(!text) return;
-  /* 停止当前所有播放 */
   if(window._currentTTSAudio){ try{ window._currentTTSAudio.pause(); }catch(e){} window._currentTTSAudio = null; }
   if('speechSynthesis' in window) window.speechSynthesis.cancel();
   window._speakRunId = (window._speakRunId||0) + 1;
@@ -870,45 +970,37 @@ async function speakEnglish(text){
   const sentences = String(text||'').replace(/\s+/g,' ').split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
   const queue = sentences.length ? sentences : [String(text||'')];
 
-  /* StreamElements TTS：AWS Polly 神经语音，免费、无需登录、无弹窗 */
-  const SE_VOICE = 'Joanna';
-  let seFailed = false;
+  let edgeFailed = false;
 
   for(let idx=0; idx<queue.length; idx++){
-    if(runId !== window._speakRunId || seFailed) break;
+    if(runId !== window._speakRunId || edgeFailed) break;
     const sentence = queue[idx];
     try{
-      const url = 'https://api.streamelements.com/kappa/v2/speech?voice=' + encodeURIComponent(SE_VOICE) + '&text=' + encodeURIComponent(sentence);
-      /* 用 fetch + blob 方式加载，比 new Audio(url) 更可靠，避免跨域加载问题 */
-      const resp = await fetch(url);
-      if(!resp.ok) throw new Error('TTS HTTP ' + resp.status);
-      const blob = await resp.blob();
-      if(blob.size < 100) throw new Error('TTS returned empty audio');
+      const blob = await edgeTtsSynthesize(sentence, EDGE_TTS_VOICE);
+      if(runId !== window._speakRunId) break;
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
       window._currentTTSAudio = audio;
-      /* 等待这一句播放完再播下一句 */
       await new Promise(resolve=>{
         let settled = false;
         const done = ()=>{ if(!settled){ settled=true; URL.revokeObjectURL(audioUrl); resolve(); } };
         audio.onended = done;
-        audio.onerror = ()=>{ seFailed = true; done(); };
+        audio.onerror = ()=>{ edgeFailed = true; done(); };
         audio.play().then(()=>{
           const wc = sentence.split(' ').length;
           setTimeout(done, Math.max(8000, wc * 1200));
         }).catch(()=>{
-          seFailed = true;
+          edgeFailed = true;
           done();
         });
       });
     }catch(e){
-      console.warn('StreamElements TTS error:', e);
-      seFailed = true;
+      console.warn('Edge TTS error:', e);
+      edgeFailed = true;
     }
   }
 
-  if(seFailed){
-    toast('网络语音不可用，切换本地语音...');
+  if(edgeFailed){
     speakWithWebAPI(text);
   }
 }
