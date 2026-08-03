@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v28-edge-tts-websocket';
+const CACHE_NAME = 'lifeos-v29-vercel-edge-tts';
 const FILES_TO_CACHE = [
   './',
   './index.html',

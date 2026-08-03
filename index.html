@@ -976,7 +976,12 @@ async function speakEnglish(text){
     if(runId !== window._speakRunId || edgeFailed) break;
     const sentence = queue[idx];
     try{
-      const blob = await edgeTtsSynthesize(sentence, EDGE_TTS_VOICE);
+      /* 调用同域 Vercel Serverless API，无 CORS 问题 */
+      const apiUrl = '/api/tts?text=' + encodeURIComponent(sentence) + '&voice=' + encodeURIComponent(EDGE_TTS_VOICE);
+      const resp = await fetch(apiUrl);
+      if(!resp.ok) throw new Error('TTS API HTTP ' + resp.status);
+      const blob = await resp.blob();
+      if(blob.size < 100) throw new Error('TTS returned empty audio');
       if(runId !== window._speakRunId) break;
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
