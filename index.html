@@ -15,6 +15,7 @@
 <script>if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(()=>{})})}</script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://js.puter.com/v2/"></script>
 <style>
   :root{
     --bg:#ffffff; --bg-soft:#fafafa; --bg-card:#ffffff;
@@ -786,10 +787,11 @@ function renderStatusOptions(name, current, options){
 function selectedRadio(name){
   return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 }
-/* ---- 高质量英文语音引擎选择 ---- */
+/* ---- 英文语音朗读：Puter.js 神经网络语音（Gemini/Polly）+ Web Speech API 兜底 ---- */
 let _bestEnVoice = null;
+let _puterTTSAvailable = null;
 function pickBestEnVoice(){
-  const voices = window.speechSynthesis.getVoices();
+  const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
   if(!voices || voices.length === 0) return null;
   const pref = [
     'Google US English',
@@ -812,85 +814,116 @@ if('speechSynthesis' in window){
   window.speechSynthesis.onvoiceschanged = ()=>{ _bestEnVoice = pickBestEnVoice(); };
   _bestEnVoice = pickBestEnVoice();
 }
-function speakEnglish(text){
+
+/* Web Speech API 兜底（网络不可用时使用） */
+function speakWithWebAPI(text){
   if(!('speechSynthesis' in window)){ toast('当前浏览器不支持朗读'); return; }
   window.speechSynthesis.cancel();
   window._speakRunId = (window._speakRunId||0) + 1;
   const runId = window._speakRunId;
-
-  /* 1) 先按句号/问号/感叹号切，再按逗号/分号细切，保证每段不超过 ~10 词 */
-  const rawParts = String(text||'')
-    .replace(/\s+/g,' ')
-    .split(/(?<=[.!?])\s+|[；;]\s*/)
-    .map(s=>s.trim())
-    .filter(Boolean);
+  const rawParts = String(text||'').replace(/\s+/g,' ').split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
   const queue = [];
   (rawParts.length ? rawParts : [String(text||'')]).forEach(part=>{
     const clauses = part.split(/,\s*/);
     let chunk = '';
-    clauses.forEach((clause,idx)=>{
+    clauses.forEach(clause=>{
       const candidate = chunk ? chunk + ', ' + clause : clause;
-      const wordCount = candidate.split(' ').length;
-      if(wordCount > 10 && chunk){
-        queue.push(chunk.trim());
-        chunk = clause;
-      } else {
-        chunk = candidate;
-      }
+      if(candidate.split(' ').length > 10 && chunk){ queue.push(chunk.trim()); chunk = clause; }
+      else chunk = candidate;
     });
     if(chunk.trim()) queue.push(chunk.trim());
   });
-
-  /* 2) resume() 心跳：Chrome 15 秒截断 bug 的保活 */
-  let keepAlive = null;
-  const startHeartbeat = ()=>{
-    keepAlive = setInterval(()=>{
-      if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
-      if(window.speechSynthesis.speaking){
-        window.speechSynthesis.pause();
-        window.speechSynthesis.resume();
-      }
-    }, 8000);
-  };
-  const stopHeartbeat = ()=>{ if(keepAlive){ clearInterval(keepAlive); keepAlive = null; } };
-
+  let keepAlive = setInterval(()=>{
+    if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
+    if(window.speechSynthesis.speaking){ window.speechSynthesis.pause(); window.speechSynthesis.resume(); }
+  }, 8000);
   let i = 0;
   const speakNext = ()=>{
-    if(runId !== window._speakRunId){ stopHeartbeat(); return; }
-    if(i >= queue.length){ stopHeartbeat(); return; }
+    if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
+    if(i >= queue.length){ clearInterval(keepAlive); return; }
     const chunk = queue[i++];
     const u = new SpeechSynthesisUtterance(chunk);
     u.lang = 'en-US';
-    /* 3) 智能语速：疑问句稍慢、短句稍快，整体自然 */
     const wc = chunk.split(' ').length;
     const isQuestion = /\?\s*$/.test(chunk) || /^(wh|how|do|does|can|could|would|will|is|are|am)\b/i.test(chunk);
     u.rate = isQuestion ? 0.72 : (wc <= 4 ? 0.78 : 0.75);
-    u.pitch = 1.0;
-    u.volume = 1.0;
-    /* 4) 选用最佳语音 */
-    if(_bestEnVoice){
-      u.voice = _bestEnVoice;
-    } else {
-      _bestEnVoice = pickBestEnVoice();
-      if(_bestEnVoice) u.voice = _bestEnVoice;
-    }
+    u.pitch = 1.0; u.volume = 1.0;
+    if(_bestEnVoice){ u.voice = _bestEnVoice; } else { _bestEnVoice = pickBestEnVoice(); if(_bestEnVoice) u.voice = _bestEnVoice; }
     let done = false;
-    const next = ()=>{
-      if(done) return;
-      done = true;
-      /* 5) 缩短段间停顿到 90ms，让衔接更流畅 */
-      setTimeout(speakNext, 90);
-    };
-    /* 6) 更精准的兜底计时器：按词数 × (600ms / rate) 估算 */
-    const estimatedMs = Math.max(1500, Math.ceil(wc * 600 / u.rate));
-    const timer = setTimeout(next, estimatedMs);
+    const next = ()=>{ if(done) return; done = true; setTimeout(speakNext, 90); };
+    const timer = setTimeout(next, Math.max(1500, Math.ceil(wc * 600 / u.rate)));
     u.onend = ()=>{ clearTimeout(timer); next(); };
     u.onerror = ()=>{ clearTimeout(timer); next(); };
     window.speechSynthesis.speak(u);
   };
-
-  startHeartbeat();
   speakNext();
+}
+
+/* 主朗读函数：优先 Puter.js 神经网络语音，失败自动降级到 Web Speech API */
+async function speakEnglish(text){
+  if(!text) return;
+  /* 停止当前所有播放 */
+  if(window._currentTTSAudio){ try{ window._currentTTSAudio.pause(); }catch(e){} window._currentTTSAudio = null; }
+  if('speechSynthesis' in window) window.speechSynthesis.cancel();
+  window._speakRunId = (window._speakRunId||0) + 1;
+  const runId = window._speakRunId;
+
+  /* 检测 Puter.js 是否可用 */
+  if(_puterTTSAvailable === null){
+    _puterTTSAvailable = (typeof puter !== 'undefined' && puter.ai && typeof puter.ai.txt2speech === 'function');
+  }
+
+  /* 分句 */
+  const sentences = String(text||'').replace(/\s+/g,' ').split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
+  const queue = sentences.length ? sentences : [String(text||'')];
+
+  if(_puterTTSAvailable){
+    toast('🎙️ 正在生成高质量语音...');
+    let puterFailed = false;
+    for(let idx=0; idx<queue.length; idx++){
+      if(runId !== window._speakRunId || puterFailed) break;
+      const sentence = queue[idx];
+      try{
+        let audio = null;
+        /* 优先 Gemini TTS：最自然，可用自然语言控制说话风格 */
+        try{
+          audio = await puter.ai.txt2speech(sentence, {
+            provider: 'gemini',
+            voice: 'Puck',
+            instructions: 'Speak clearly and naturally at a moderate pace, as if teaching English to a beginner. Use standard American English pronunciation with a friendly, engaging tone.'
+          });
+        }catch(geminiErr){
+          /* Gemini 失败 → AWS Polly 神经语音（Joanna，美式女声，非常自然） */
+          audio = await puter.ai.txt2speech(sentence, {
+            voice: 'Joanna',
+            engine: 'neural',
+            language: 'en-US'
+          });
+        }
+        if(runId !== window._speakRunId) break;
+        window._currentTTSAudio = audio;
+        /* 等待这一句播放完再播下一句 */
+        await new Promise(resolve=>{
+          let settled = false;
+          const done = ()=>{ if(!settled){ settled=true; resolve(); } };
+          audio.onended = done;
+          audio.onerror = done;
+          audio.play().catch(done);
+          const wc = sentence.split(' ').length;
+          setTimeout(done, Math.max(5000, wc * 900));
+        });
+      }catch(e){
+        console.warn('Puter TTS error, falling back to Web Speech API:', e);
+        _puterTTSAvailable = false;
+        puterFailed = true;
+      }
+    }
+    if(!puterFailed) return;
+    toast('网络语音不可用，切换本地语音...');
+  }
+
+  /* 兜底：Web Speech API */
+  speakWithWebAPI(text);
 }
 function speakLine(en, zh){
   return `<div class="flex items-center justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">

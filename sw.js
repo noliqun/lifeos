@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v24-english-voice-natural';
+const CACHE_NAME = 'lifeos-v25-puter-neural-tts';
 const FILES_TO_CACHE = [
   './',
   './index.html',
