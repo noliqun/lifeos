@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v26-streamelements-tts';
+const CACHE_NAME = 'lifeos-v27-se-tts-fetch-blob';
 const FILES_TO_CACHE = [
   './',
   './index.html',

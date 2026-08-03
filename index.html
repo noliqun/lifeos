@@ -871,7 +871,7 @@ async function speakEnglish(text){
   const queue = sentences.length ? sentences : [String(text||'')];
 
   /* StreamElements TTS：AWS Polly 神经语音，免费、无需登录、无弹窗 */
-  const SE_VOICE = 'Joanna'; /* 美式女声，发音清晰自然，适合英语教学 */
+  const SE_VOICE = 'Joanna';
   let seFailed = false;
 
   for(let idx=0; idx<queue.length; idx++){
@@ -879,16 +879,21 @@ async function speakEnglish(text){
     const sentence = queue[idx];
     try{
       const url = 'https://api.streamelements.com/kappa/v2/speech?voice=' + encodeURIComponent(SE_VOICE) + '&text=' + encodeURIComponent(sentence);
-      const audio = new Audio(url);
+      /* 用 fetch + blob 方式加载，比 new Audio(url) 更可靠，避免跨域加载问题 */
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('TTS HTTP ' + resp.status);
+      const blob = await resp.blob();
+      if(blob.size < 100) throw new Error('TTS returned empty audio');
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
       window._currentTTSAudio = audio;
       /* 等待这一句播放完再播下一句 */
       await new Promise(resolve=>{
         let settled = false;
-        const done = ()=>{ if(!settled){ settled=true; resolve(); } };
+        const done = ()=>{ if(!settled){ settled=true; URL.revokeObjectURL(audioUrl); resolve(); } };
         audio.onended = done;
         audio.onerror = ()=>{ seFailed = true; done(); };
         audio.play().then(()=>{
-          /* 兜底超时：如果音频卡住，按词数估算最长等待时间 */
           const wc = sentence.split(' ').length;
           setTimeout(done, Math.max(8000, wc * 1200));
         }).catch(()=>{
