@@ -786,142 +786,104 @@ function renderStatusOptions(name, current, options){
 function selectedRadio(name){
   return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 }
-/* ---- 英文语音朗读：Google Translate TTS（自然发音）+ Web Speech API 静默兜底 ---- */
+/* ---- 英文语音朗读：Web Speech API 深度优化版（纯本地，无网络依赖，永不卡死） ---- */
 let _bestEnVoice = null;
+let _voicesReady = false;
 function pickBestEnVoice(){
   const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
   if(!voices || voices.length === 0) return null;
-  const pref = ['Google US English','Microsoft Aria Online (Natural) - English (United States)','Microsoft Jenny Online (Natural) - English (United States)','Microsoft Guy Online (Natural) - English (United States)','Samantha','Google UK English Female','Microsoft Zira - English (United States)','Karen','Moira','Tessa'];
+  const pref = ['Google US English','Microsoft Aria Online (Natural) - English (United States)','Microsoft Jenny Online (Natural) - English (United States)','Microsoft Guy Online (Natural) - English (United States)','Samantha','Google UK English Female','Microsoft Zira - English (United States)','Karen','Moira','Tessa','Daniel','Alex'];
   for(const name of pref){ const v = voices.find(v=>v.name === name && v.lang.startsWith('en')); if(v) return v; }
   const enVoices = voices.filter(v=>v.lang && v.lang.startsWith('en'));
   if(enVoices.length === 0) return null;
-  return enVoices.find(v=>/natural|aria|jenny|samantha|google/i.test(v.name)) || enVoices[0];
+  return enVoices.find(v=>/natural|aria|jenny|samantha|google|neural/i.test(v.name)) || enVoices[0];
 }
 if('speechSynthesis' in window){
-  const iv = ()=>{ _bestEnVoice = pickBestEnVoice(); };
-  window.speechSynthesis.onvoiceschanged = iv;
-  iv();
-  setTimeout(iv, 500);
-  setTimeout(iv, 1500);
+  const initVoices = ()=>{
+    _bestEnVoice = pickBestEnVoice();
+    _voicesReady = !!_bestEnVoice;
+  };
+  window.speechSynthesis.onvoiceschanged = initVoices;
+  initVoices();
+  setTimeout(initVoices, 300);
+  setTimeout(initVoices, 1000);
+  setTimeout(initVoices, 2500);
 }
 
-/* 文本切分：按句子拆分，超长句按逗号再拆，最终控制在 ≤190 字符以适配 Google TTS */
+/* 文本切分：短句优先，每段不超过 7 个词，彻底杜绝长句卡顿 */
 function splitForTTS(text){
   const clean = String(text||'').replace(/\s+/g,' ').trim();
   if(!clean) return [];
+  /* 先按句子分割 */
   const sentences = clean.split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
-  const chunks = [];
+  const queue = [];
   sentences.forEach(sent=>{
-    if(sent.length <= 190){ chunks.push(sent); return; }
-    const parts = sent.split(/,\s*/);
+    /* 再按逗号分割 */
+    const clauses = sent.split(/,\s*/);
     let buf = '';
-    parts.forEach(p=>{
-      const candidate = buf ? buf + ', ' + p : p;
-      if(candidate.length > 190 && buf){ chunks.push(buf.trim()); buf = p; }
+    clauses.forEach(clause=>{
+      const candidate = buf ? buf + ', ' + clause : clause;
+      if(candidate.split(' ').length > 7 && buf){ queue.push(buf.trim()); buf = clause; }
       else buf = candidate;
     });
-    if(buf.trim()) chunks.push(buf.trim());
+    if(buf.trim()) queue.push(buf.trim());
   });
-  /* 最终保底：任何超长段按词硬切 */
+  /* 最终保底：超长段按词硬切，每段最多 7 词 */
   const final = [];
-  chunks.forEach(c=>{
-    if(c.length <= 190){ final.push(c); return; }
-    const words = c.split(' '); let w = '';
-    words.forEach(word=>{
-      if((w+' '+word).length > 190 && w){ final.push(w.trim()); w = word; }
-      else w = w ? w+' '+word : word;
-    });
-    if(w.trim()) final.push(w.trim());
+  queue.forEach(q=>{
+    const words = q.split(' ');
+    if(words.length <= 7){ final.push(q); return; }
+    for(let i=0; i<words.length; i+=7){ final.push(words.slice(i, i+7).join(' ')); }
   });
   return final;
 }
 
-/* Google Translate TTS：通过 Audio 元素播放，无需认证，自然真人发音 */
-function playGoogleChunk(chunk, runId){
-  return new Promise((resolve, reject)=>{
-    const audio = new Audio();
-    window._currentTTSAudio = audio;
-    let settled = false;
-    const wc = chunk.split(' ').length;
-    const loadTimer = setTimeout(()=>{ if(!settled){ settled=true; try{audio.pause();}catch(e){} reject(new Error('load_timeout')); } }, 6000);
-    audio.onplaying = ()=>{
-      clearTimeout(loadTimer);
-      const maxDur = Math.max(8000, wc * 800);
-      setTimeout(()=>{ if(!settled){ settled=true; try{audio.pause();}catch(e){} resolve(); } }, maxDur);
-    };
-    audio.onended = ()=>{ if(!settled){ settled=true; clearTimeout(loadTimer); resolve(); } };
-    audio.onerror = ()=>{ if(!settled){ settled=true; clearTimeout(loadTimer); reject(new Error('audio_err')); } };
-    audio.onabort = ()=>{ if(!settled){ settled=true; clearTimeout(loadTimer); resolve(); } };
-    audio.src = 'https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=' + encodeURIComponent(chunk);
-    audio.play().catch(e=>{ if(!settled){ settled=true; clearTimeout(loadTimer); reject(e); } });
-  });
-}
-
-/* Web Speech API 兜底：优化分句 + keepalive 防卡顿 */
-function speakWithWebAPI(text, runId){
+/* 主朗读函数：纯 Web Speech API，无网络依赖，无弹窗，即点即读 */
+function speakEnglish(text){
+  if(!text) return;
   if(!('speechSynthesis' in window)) return;
+  /* 停止之前的朗读 */
   window.speechSynthesis.cancel();
-  const rawParts = String(text||'').replace(/\s+/g,' ').split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
-  const queue = [];
-  (rawParts.length ? rawParts : [String(text||'')]).forEach(part=>{
-    const clauses = part.split(/,\s*/);
-    let chunk = '';
-    clauses.forEach(clause=>{
-      const candidate = chunk ? chunk + ', ' + clause : clause;
-      if(candidate.split(' ').length > 8 && chunk){ queue.push(chunk.trim()); chunk = clause; }
-      else chunk = candidate;
-    });
-    if(chunk.trim()) queue.push(chunk.trim());
-  });
+  window._speakRunId = (window._speakRunId||0) + 1;
+  const runId = window._speakRunId;
+  /* 确保语音已加载 */
+  if(!_bestEnVoice){ _bestEnVoice = pickBestEnVoice(); }
+  const chunks = splitForTTS(text);
+  if(chunks.length === 0) return;
+  /* keepalive：每 10 秒 pause+resume 防止 Chrome 15 秒自动停止 */
   let keepAlive = setInterval(()=>{
     if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
-    if(window.speechSynthesis.speaking){ window.speechSynthesis.pause(); window.speechSynthesis.resume(); }
+    if(window.speechSynthesis.speaking){
+      window.speechSynthesis.pause();
+      window.speechSynthesis.resume();
+    }
   }, 10000);
   let i = 0;
   const speakNext = ()=>{
     if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
-    if(i >= queue.length){ clearInterval(keepAlive); return; }
-    const chunk = queue[i++];
+    if(i >= chunks.length){ clearInterval(keepAlive); return; }
+    const chunk = chunks[i++];
     const u = new SpeechSynthesisUtterance(chunk);
     u.lang = 'en-US';
     const wc = chunk.split(' ').length;
     const isQ = /\?\s*$/.test(chunk) || /^(wh|how|do|does|can|could|would|will|is|are|am)\b/i.test(chunk);
     const isE = /!\s*$/.test(chunk);
-    u.rate = isQ ? 0.88 : (isE ? 0.92 : (wc <= 4 ? 0.90 : 0.88));
-    u.pitch = isQ ? 1.06 : (isE ? 1.04 : 1.0);
+    /* 自然语速：疑问句稍慢带升调，感叹句稍快，陈述句中等 */
+    u.rate = isQ ? 0.90 : (isE ? 0.95 : (wc <= 3 ? 0.92 : 0.90));
+    u.pitch = isQ ? 1.06 : (isE ? 1.03 : 1.0);
     u.volume = 1.0;
-    if(_bestEnVoice){ u.voice = _bestEnVoice; } else { _bestEnVoice = pickBestEnVoice(); if(_bestEnVoice) u.voice = _bestEnVoice; }
+    if(_bestEnVoice) u.voice = _bestEnVoice;
+    else { _bestEnVoice = pickBestEnVoice(); if(_bestEnVoice) u.voice = _bestEnVoice; }
     let done = false;
-    const next = ()=>{ if(done) return; done = true; setTimeout(speakNext, 80); };
-    const timer = setTimeout(next, Math.max(2500, Math.ceil(wc * 500 / u.rate)));
+    const next = ()=>{ if(done) return; done = true; setTimeout(speakNext, 60); };
+    /* 超时保护：防止某个 chunk 卡住不触发 onend */
+    const timer = setTimeout(next, Math.max(3000, Math.ceil(wc * 600 / u.rate)));
     u.onend = ()=>{ clearTimeout(timer); next(); };
     u.onerror = ()=>{ clearTimeout(timer); next(); };
     window.speechSynthesis.speak(u);
   };
-  speakNext();
-}
-
-/* 主朗读函数：先试 Google TTS（自然发音），失败静默切换 Web Speech API，不弹任何提示 */
-async function speakEnglish(text){
-  if(!text) return;
-  if(window._currentTTSAudio){ try{ window._currentTTSAudio.pause(); }catch(e){} window._currentTTSAudio = null; }
-  if('speechSynthesis' in window) window.speechSynthesis.cancel();
-  window._speakRunId = (window._speakRunId||0) + 1;
-  const runId = window._speakRunId;
-  const chunks = splitForTTS(text);
-  let playedUntil = 0;
-  for(let i=0; i<chunks.length; i++){
-    if(runId !== window._speakRunId) return;
-    try{
-      await playGoogleChunk(chunks[i], runId);
-      playedUntil = i + 1;
-      if(i < chunks.length - 1 && runId === window._speakRunId) await new Promise(r=>setTimeout(r, 120));
-    }catch(e){ break; }
-  }
-  if(runId !== window._speakRunId) return;
-  if(playedUntil >= chunks.length) return;
-  const remaining = chunks.slice(playedUntil).join(' ');
-  if(remaining) speakWithWebAPI(remaining, runId);
+  /* 稍微延迟启动，确保 cancel 完全生效 */
+  setTimeout(speakNext, 50);
 }
 function speakLine(en, zh){
   return `<div class="flex items-center justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">
@@ -1574,7 +1536,7 @@ function openJournal(id){
         <div><label>😊 今天让我开心的事情</label><textarea class="textarea" id="j-happy">${escape(j.happy)}</textarea></div>
         <div><label>💡 今天最大的感悟</label><textarea class="textarea" id="j-insight">${escape(j.insight)}</textarea></div>
         <div><label>🎯 今天有没有为自己的人生自由之路做了什么？</label><textarea class="textarea" id="j-freedom">${escape(j.closerFreedom)}</textarea></div>
-        <div><label>💼 今天做得很棒的事情</label><textarea class="textarea" id="j-done">${escape(j.done)}</textarea></div>
+        <div><label>💼 今天发现了什么真实需求</label><textarea class="textarea" id="j-done">${escape(j.done)}</textarea></div>
         <div><label>📹 今天看到哪些值得记录的视频或灵感？</label><textarea class="textarea" id="j-video">${escape(j.videoInspire)}</textarea></div>
         <div><label>❤️ 今天需要反思什么？</label><textarea class="textarea" id="j-reflect">${escape(j.reflect)}</textarea></div>
         <div class="border-t border-[var(--border)] pt-4">
@@ -1664,7 +1626,7 @@ async function aiSummarizeJournal(id){
   const lines = [
     `今日状态：身体${draft.bodyStatus||'未记录'}，情绪${draft.emotionStatus||'未记录'}。`,
     draft.gratefulSelf ? `今天最值得感谢自己的是：${draft.gratefulSelf}` : '',
-    draft.done ? `今天做得很棒的事情：${draft.done}` : '',
+    draft.done ? `今天发现了什么真实需求：${draft.done}` : '',
     draft.happy ? `今天的开心来源：${draft.happy}` : '',
     draft.insight ? `今天的感悟：${draft.insight}` : '',
     draft.closerFreedom ? `离自由人生更近的一步：${draft.closerFreedom}` : '',
