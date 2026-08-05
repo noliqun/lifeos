@@ -723,6 +723,11 @@ function syncCareFinance(care, clientId, opts={}){
   if(!care || !care.id) return;
   const amount = Number(care.payment||0);
   const existing = DB.finances.find(f=>f.source==='care' && f.refId===care.id);
+  /* 扣卡支付：会员卡早已充值，不计入当天收入，移除已有财务记录 */
+  if(care.payMethod === '扣卡'){
+    DB.finances = DB.finances.filter(f=>!(f.source==='care' && f.refId===care.id));
+    return;
+  }
   if(amount <= 0){
     DB.finances = DB.finances.filter(f=>!(f.source==='care' && f.refId===care.id));
     return;
@@ -1723,7 +1728,7 @@ function renderClient(el){
   // V5: 经营概览数据
   const monthStr = todayStr().slice(0,7);
   const monthCares = DB.cares.filter(c=>c.date.startsWith(monthStr));
-  const monthRevenue = monthCares.reduce((s,c)=>s+Number(c.payment||0),0);
+  const monthRevenue = monthCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
   const monthNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(monthStr));
   const hasActiveFilters = statusFilter||levelFilter||projectFilter||minPay||maxPay||minVisits||lastVisitRange;
 
@@ -2734,9 +2739,10 @@ function renderClientAnalysis(){
   const lostClients = DB.clients.filter(c=>calcClientLife(c).status==='流失风险');
   const sleepClients = DB.clients.filter(c=>calcClientLife(c).status==='沉睡');
 
-  // 各项目收入占比
+  // 各项目收入占比（扣卡不计入收入）
   const projectRevenue = {};
   DB.cares.forEach(c=>{
+    if(c.payMethod==='扣卡') return;
     const pt = c.projectType||'其他';
     projectRevenue[pt] = (projectRevenue[pt]||0) + Number(c.payment||0);
   });
@@ -2782,8 +2788,9 @@ function renderClientAnalysis(){
       <!-- 支付方式 -->
       <div class="card p-4 mb-4">
         <h4 class="font-semibold text-sm mb-3">💳 支付方式分布</h4>
+        <div class="text-xs text-[var(--text-faint)] mb-2">注：扣卡为会员卡预付消费，不计入当日收入</div>
         <div class="grid grid-cols-2 gap-2">
-          ${Object.entries(payMethodStats).map(([pm,amt])=>`<div class="flex justify-between text-sm"><span class="text-[var(--text-soft)]">${escape(pm)}</span><span class="font-medium">${fmtMoney(amt)}</span></div>`).join('')}
+          ${Object.entries(payMethodStats).map(([pm,amt])=>`<div class="flex justify-between text-sm"><span class="text-[var(--text-soft)]">${escape(pm)}${pm==='扣卡'?' *':''}</span><span class="font-medium">${fmtMoney(amt)}</span></div>`).join('')}
         </div>
       </div>
 
@@ -2826,8 +2833,8 @@ async function aiClientReport(){
   const lostClients = DB.clients.filter(c=>calcClientLife(c).status==='流失风险');
   const sleepClients = DB.clients.filter(c=>calcClientLife(c).status==='沉睡');
   const projectRevenue = {};
-  DB.cares.forEach(c=>{ const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
-  const monthIncome = monthCares.reduce((s,c)=>s+Number(c.payment||0),0);
+  DB.cares.forEach(c=>{ if(c.payMethod==='扣卡') return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
+  const monthIncome = monthCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
 
   const prompt = `请根据以下美容工作室数据生成本月经营建议：
 
@@ -2865,7 +2872,7 @@ function renderBusinessReport(){
 
   // 年度数据
   const yearCares = DB.cares.filter(c=>c.date.startsWith(yearStr));
-  const yearRevenue = yearCares.reduce((s,c)=>s+Number(c.payment||0),0);
+  const yearRevenue = yearCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
   const yearNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(yearStr));
   const yearClients = DB.clients.filter(c=>{
     const life = calcClientLife(c);
@@ -2877,7 +2884,7 @@ function renderBusinessReport(){
   for(let m=0;m<12;m++){
     const ms = String(now.getFullYear())+'-'+String(m+1).padStart(2,'0');
     const mc = DB.cares.filter(c=>c.date.startsWith(ms));
-    const rev = mc.reduce((s,c)=>s+Number(c.payment||0),0);
+    const rev = mc.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
     const newC = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(ms)).length;
     monthData.push({ month: (m+1)+'月', revenue: rev, visits: mc.length, newClients: newC });
   }
@@ -3140,12 +3147,12 @@ function exportReportPDF(){
   const now = new Date();
   const yearStr = String(now.getFullYear());
   const yearCares = DB.cares.filter(c=>c.date.startsWith(yearStr));
-  const yearRevenue = yearCares.reduce((s,c)=>s+Number(c.payment||0),0);
+  const yearRevenue = yearCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
   const yearNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(yearStr));
   const lostClients = DB.clients.filter(c=>calcClientLife(c).status==='流失风险');
   const sleepClients = DB.clients.filter(c=>calcClientLife(c).status==='沉睡');
   const projectRevenue = {};
-  DB.cares.forEach(c=>{ const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
+  DB.cares.forEach(c=>{ if(c.payMethod==='扣卡') return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
   const projectEntries = Object.entries(projectRevenue).sort((a,b)=>b[1]-a[1]);
   const repurchaseClients = DB.clients.filter(c=>calcClientLife(c).visitCount>=2).length;
   const repurchaseRate = DB.clients.length>0 ? Math.round(repurchaseClients/DB.clients.length*100) : 0;
@@ -3213,12 +3220,12 @@ async function aiAnnualSummary(){
   const now = new Date();
   const yearStr = String(now.getFullYear());
   const yearCares = DB.cares.filter(c=>c.date.startsWith(yearStr));
-  const yearRevenue = yearCares.reduce((s,c)=>s+Number(c.payment||0),0);
+  const yearRevenue = yearCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
   const yearNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(yearStr));
   const lostClients = DB.clients.filter(c=>calcClientLife(c).status==='流失风险');
   const sleepClients = DB.clients.filter(c=>calcClientLife(c).status==='沉睡');
   const projectRevenue = {};
-  DB.cares.forEach(c=>{ const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
+  DB.cares.forEach(c=>{ if(c.payMethod==='扣卡') return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
   const repurchaseClients = DB.clients.filter(c=>calcClientLife(c).visitCount>=2).length;
   const repurchaseRate = DB.clients.length>0 ? Math.round(repurchaseClients/DB.clients.length*100) : 0;
   const avgTicket = yearCares.length>0 ? Math.round(yearRevenue/yearCares.length) : 0;

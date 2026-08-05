@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v36-webspeech-only';
+const CACHE_NAME = 'lifeos-v37-card-payment-fix';
 const FILES_TO_CACHE = [
   './',
   './index.html',
