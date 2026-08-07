@@ -719,23 +719,43 @@ function clientDisplayName(clientId){
 function getClientSortName(c){
   return (c.name || c.wechatName || '').trim() || '未命名客户';
 }
+/* 计算一条消费记录的实际收入（排除扣卡部分） */
+function careRealIncome(c){
+  const total = Number(c.payment||0);
+  const amt2 = Number(c.payment2||0);
+  if(!c.payMethod2 || amt2 <= 0){
+    return c.payMethod === '扣卡' ? 0 : total;
+  }
+  const amt1 = total - amt2;
+  let income = 0;
+  if(c.payMethod !== '扣卡') income += Math.max(0, amt1);
+  if(c.payMethod2 !== '扣卡') income += amt2;
+  return income;
+}
+/* 格式化支付方式显示（支持混合支付） */
+function fmtPayMethod(care){
+  if(!care.payMethod) return '';
+  const amt2 = Number(care.payment2||0);
+  if(care.payMethod2 && amt2 > 0){
+    const amt1 = Number(care.payment||0) - amt2;
+    return `${escape(care.payMethod)} ${fmtMoney(amt1)} + ${escape(care.payMethod2)} ${fmtMoney(amt2)}`;
+  }
+  return escape(care.payMethod);
+}
 function syncCareFinance(care, clientId, opts={}){
   if(!care || !care.id) return;
-  const amount = Number(care.payment||0);
+  const total = Number(care.payment||0);
   const existing = DB.finances.find(f=>f.source==='care' && f.refId===care.id);
-  /* 扣卡支付：会员卡早已充值，不计入当天收入，移除已有财务记录 */
-  if(care.payMethod === '扣卡'){
-    DB.finances = DB.finances.filter(f=>!(f.source==='care' && f.refId===care.id));
-    return;
-  }
-  if(amount <= 0){
+  /* 计算实际收入（排除扣卡部分） */
+  const realIncome = careRealIncome(care);
+  if(realIncome <= 0){
     DB.finances = DB.finances.filter(f=>!(f.source==='care' && f.refId===care.id));
     return;
   }
   const record = existing || { id:'fin_'+care.id, source:'care', refId:care.id, created:new Date().toISOString() };
   record.type = 'income';
   record.scope = 'shop';
-  record.amount = amount;
+  record.amount = realIncome;
   record.date = care.date || todayStr();
   record.category = care.projectType || '护理';
   record.project = care.projectType || '护理';
@@ -744,7 +764,20 @@ function syncCareFinance(care, clientId, opts={}){
   record.clientName = clientDisplayName(record.clientId);
   record.clientWechat = client ? (client.wechatName || '') : '';
   record.clientType = client ? (client.clientType || care.clientType || '') : (care.clientType || '');
-  record.paymentMethod = care.payMethod || '微信';
+  /* 混合支付时记录实际收入对应的支付方式 */
+  const amt2 = Number(care.payment2||0);
+  if(care.payMethod2 && amt2 > 0){
+    const amt1 = total - amt2;
+    if(care.payMethod === '扣卡'){
+      record.paymentMethod = care.payMethod2;
+    } else if(care.payMethod2 === '扣卡'){
+      record.paymentMethod = care.payMethod;
+    } else {
+      record.paymentMethod = care.payMethod + '+' + care.payMethod2;
+    }
+  } else {
+    record.paymentMethod = care.payMethod || '微信';
+  }
   record.note = care.careNote || care.careNote2 || care.nailNote || care.lashNote || care.semiNote || '';
   if(!existing) DB.finances.push(record);
 }
@@ -1728,7 +1761,7 @@ function renderClient(el){
   // V5: 经营概览数据
   const monthStr = todayStr().slice(0,7);
   const monthCares = DB.cares.filter(c=>c.date.startsWith(monthStr));
-  const monthRevenue = monthCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
+  const monthRevenue = monthCares.reduce((s,c)=>s+careRealIncome(c),0);
   const monthNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(monthStr));
   const hasActiveFilters = statusFilter||levelFilter||projectFilter||minPay||maxPay||minVisits||lastVisitRange;
 
@@ -2041,7 +2074,7 @@ function openClient(id){
                 ${care.nailNote?`<div class="text-sm"><span class="text-[var(--text-faint)]">美甲备注：</span>${escape(care.nailNote)}</div>`:''}
                 ${care.lashStyle?`<div class="text-sm mt-1"><span class="text-[var(--text-faint)]">美睫款式：</span>${escape(care.lashStyle)} · ${escape(care.lashLength||'')} · ${escape(care.lashCurl||'')}</div>`:''}
                 ${care.lashNote?`<div class="text-sm"><span class="text-[var(--text-faint)]">美睫备注：</span>${escape(care.lashNote)}</div>`:''}
-                ${care.payment?`<div class="text-sm text-[var(--green)] font-medium mt-1">消费 ${fmtMoney(care.payment)} ${care.payMethod?'· '+escape(care.payMethod):''}</div>`:''}
+                ${care.payment?`<div class="text-sm text-[var(--green)] font-medium mt-1">消费 ${fmtMoney(care.payment)} ${care.payMethod?'· '+fmtPayMethod(care):''}</div>`:''}
                 ${care.boughtProduct?'<div class="text-sm"><span class="text-[var(--text-faint)]">购买产品：✅</span></div>':''}
                 ${care.renewCard?'<div class="text-sm"><span class="text-[var(--text-faint)]">续卡：✅</span></div>':''}
                 ${care.careNote?`<div class="text-sm"><span class="text-[var(--text-faint)]">护理备注：</span>${escape(care.careNote)}</div>`:''}
@@ -2130,10 +2163,23 @@ function openQuickCheckout(){
             <option value="老客">否，普通顾客</option>
             <option value="新客">新客</option>
           </select></div>
-          <div><label>支付方式</label><select class="select" id="quick-payMethod">
+          <div><label>支付方式</label><select class="select" id="quick-payMethod" onchange="toggleQuickMixed()">
             ${PAY_METHODS.map(m=>`<option ${m==='微信'?'selected':''}>${m}</option>`).join('')}
           </select></div>
-          <div><label>金额</label><input class="input" type="number" id="quick-amount" placeholder="0"></div>
+          <div><label>金额</label><input class="input" type="number" id="quick-amount" placeholder="0" oninput="updateQuickMixedHint()"></div>
+          <div id="quick-mixed-toggle" class="md:col-span-2">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" id="quick-isMixed" class="rounded" onchange="toggleQuickMixed()">
+              <span class="text-sm">混合支付（如一半扣卡一半微信）</span>
+            </label>
+          </div>
+          <div id="quick-mixed-section" class="hidden md:col-span-2 grid md:grid-cols-2 gap-3" style="background:#f0fdf4;padding:12px;border-radius:8px;border:1px solid #bbf7d0;">
+            <div><label>第二种支付方式</label><select class="select" id="quick-payMethod2">
+              ${PAY_METHODS.map(m=>`<option ${m==='扣卡'?'selected':''}>${m}</option>`).join('')}
+            </select></div>
+            <div><label>第二方式金额</label><input class="input" type="number" id="quick-amount2" placeholder="0" oninput="updateQuickMixedHint()"></div>
+            <div class="md:col-span-2 text-xs text-[var(--text-faint)]" id="quick-mixed-hint"></div>
+          </div>
           <div><label>备注（可选）</label><input class="input" id="quick-note" placeholder="款式、套餐、特殊说明等"></div>
         </div>
         <div class="text-xs text-[var(--text-faint)]">提示：如果微信昵称或姓名和已有客户一致，会自动归到原客户名下，不会重复建档。</div>
@@ -2144,6 +2190,30 @@ function openQuickCheckout(){
       <button class="btn btn-primary" onclick="saveQuickCheckout()">保存并同步</button>
     `)}
   `);
+}
+function toggleQuickMixed(){
+  const checked = document.getElementById('quick-isMixed')?.checked || false;
+  const sec = document.getElementById('quick-mixed-section');
+  if(checked){
+    sec.classList.remove('hidden');
+    updateQuickMixedHint();
+  } else {
+    sec.classList.add('hidden');
+  }
+}
+function updateQuickMixedHint(){
+  const total = Number(val('quick-amount'))||0;
+  const amt2 = Number(val('quick-amount2'))||0;
+  const hint = document.getElementById('quick-mixed-hint');
+  if(!hint) return;
+  if(amt2 > 0 && total > 0){
+    const amt1 = total - amt2;
+    const pm1 = val('quick-payMethod') || '';
+    const pm2 = val('quick-payMethod2') || '';
+    hint.textContent = `${pm1} ${fmtMoney(amt1)} + ${pm2} ${fmtMoney(amt2)} = 总计 ${fmtMoney(total)}`;
+  } else {
+    hint.textContent = '';
+  }
 }
 function saveQuickCheckout(){
   try{
@@ -2168,9 +2238,13 @@ function saveQuickCheckout(){
     client.clientType = val('quick-member') || client.clientType || '老客';
     if(!client.firstDate) client.firstDate = val('quick-date')||todayStr();
     const projectType = val('quick-project') || '皮肤管理';
+    const isMixed = document.getElementById('quick-isMixed')?.checked || false;
+    const payMethod2 = isMixed ? (val('quick-payMethod2') || '') : '';
+    const payment2 = isMixed ? (Number(val('quick-amount2'))||0) : 0;
     const care = {
       id: uid(), clientId: client.id, date: val('quick-date')||todayStr(),
       clientType: client.clientType, projectType, payment: amount, payMethod: val('quick-payMethod')||'微信',
+      payMethod2, payment2,
       boughtProduct:false, renewCard:false, careNote: val('quick-note')||'',
       nailStyle:'', nailColor:'', nailNote: projectType==='美甲' ? (val('quick-note')||'') : '',
       lashStyle:'', lashLength:'', lashCurl:'', lashNote: projectType==='美睫' ? (val('quick-note')||'') : '',
@@ -2244,8 +2318,8 @@ function editCareModal(care, isNew){
 
         <!-- 消费信息区 -->
         <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div><label>💰 消费金额</label><input class="input" type="number" id="care-pay" value="${care.payment||''}" placeholder="0"></div>
-          <div><label>支付方式</label><select class="select" id="care-payMethod">
+          <div><label>💰 消费金额</label><input class="input" type="number" id="care-pay" value="${care.payment||''}" placeholder="0" oninput="updateCareMixedHint()"></div>
+          <div><label>支付方式</label><select class="select" id="care-payMethod" onchange="updateCareMixedHint()">
             ${PAY_METHODS.map(m=>`<option ${care.payMethod===m?'selected':''}>${m}</option>`).join('')}
           </select></div>
           <div class="flex items-end gap-4 pb-2">
@@ -2258,6 +2332,23 @@ function editCareModal(care, isNew){
               <span class="text-sm">续卡</span>
             </label>
           </div>
+        </div>
+
+        <!-- 混合支付 -->
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 items-end">
+          <div>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" id="care-isMixed" ${(care.payMethod2 && Number(care.payment2||0)>0)?'checked':''} class="rounded" onchange="toggleCareMixed()">
+              <span class="text-sm">混合支付（如一半扣卡一半微信）</span>
+            </label>
+          </div>
+        </div>
+        <div id="care-mixed-section" class="${(care.payMethod2 && Number(care.payment2||0)>0)?'':'hidden'} grid grid-cols-2 md:grid-cols-3 gap-3" style="background:#f0fdf4;padding:12px;border-radius:8px;border:1px solid #bbf7d0;">
+          <div><label>第二种支付方式</label><select class="select" id="care-payMethod2" onchange="updateCareMixedHint()">
+            ${PAY_METHODS.map(m=>`<option ${care.payMethod2===m?'selected':''}>${m}</option>`).join('')}
+          </select></div>
+          <div><label>第二方式金额</label><input class="input" type="number" id="care-pay2" value="${care.payment2||''}" placeholder="0" oninput="updateCareMixedHint()"></div>
+          <div class="text-xs text-[var(--text-faint)] flex items-end pb-2" id="care-mixed-hint"></div>
         </div>
 
         <!-- 美甲专属字段 -->
@@ -2347,6 +2438,28 @@ function editCareModal(care, isNew){
   window._editingCare = care;
 }
 
+/* 混合支付切换 */
+function toggleCareMixed(){
+  const checked = document.getElementById('care-isMixed')?.checked || false;
+  const sec = document.getElementById('care-mixed-section');
+  if(sec) sec.classList.toggle('hidden', !checked);
+  if(checked) updateCareMixedHint();
+}
+function updateCareMixedHint(){
+  const total = Number(val('care-pay'))||0;
+  const amt2 = Number(val('care-pay2'))||0;
+  const hint = document.getElementById('care-mixed-hint');
+  if(!hint) return;
+  if(amt2 > 0 && total > 0){
+    const amt1 = total - amt2;
+    const pm1 = val('care-payMethod') || '';
+    const pm2 = val('care-payMethod2') || '';
+    hint.textContent = `${pm1} ${fmtMoney(amt1)} + ${pm2} ${fmtMoney(amt2)} = 总计 ${fmtMoney(total)}`;
+  } else {
+    hint.textContent = '';
+  }
+}
+
 /* 项目类型切换 */
 function onProjectTypeChange(type){
   const nailSection = document.getElementById('nail-section');
@@ -2381,6 +2494,15 @@ function saveCare(id, clientId, isNew){
   care.date = val('care-date'); care.payment = val('care-pay');
   care.clientType = val('care-clientType'); care.projectType = val('care-projectType');
   care.payMethod = val('care-payMethod');
+  /* 混合支付 */
+  const isMixed = document.getElementById('care-isMixed')?.checked || false;
+  if(isMixed){
+    care.payMethod2 = val('care-payMethod2') || '';
+    care.payment2 = Number(val('care-pay2'))||0;
+  } else {
+    care.payMethod2 = '';
+    care.payment2 = 0;
+  }
   care.boughtProduct = document.getElementById('care-boughtProduct')?.checked || false;
   care.renewCard = document.getElementById('care-renewCard')?.checked || false;
   care.careNote = val('care-note');
@@ -2574,7 +2696,7 @@ async function aiClientSummary(clientId){
 常做项目：${life.projectSet.join(', ')||'无'}
 
 【消费记录】
-${cares.slice(-10).map((care,i)=>`${i+1}. ${care.date} ${care.projectType} ${care.payment||0}元 ${care.payMethod||''}${care.nailStyle?' 款式:'+care.nailStyle:''}${care.lashStyle?' 款式:'+care.lashStyle:''}${care.semiPart?' 部位:'+care.semiPart:''}`).join('\n')}
+${cares.slice(-10).map((care,i)=>{const pm2=care.payMethod2&&Number(care.payment2||0)>0?` +${care.payMethod2}${care.payment2}元`:'';return `${i+1}. ${care.date} ${care.projectType} ${care.payment||0}元 ${care.payMethod||''}${pm2}${care.nailStyle?' 款式:'+care.nailStyle:''}${care.lashStyle?' 款式:'+care.lashStyle:''}${care.semiPart?' 部位:'+care.semiPart:''}`}).join('\n')}
 
 【回访记录】
 ${followUps.length>0?followUps.slice(-5).map(f=>`${f.date} ${f.contactMethod} ${f.result||''} ${f.booked?'已预约':''}`).join('\n'):'无回访记录'}
@@ -2752,11 +2874,21 @@ function renderClientAnalysis(){
   const ranking = DB.clients.map(c=>{ const l=calcClientLife(c); return {name:c.name, total:l.totalPay, visits:l.visitCount}; })
     .sort((a,b)=>b.total-a.total).slice(0,10);
 
-  // 支付方式统计
+  // 支付方式统计（混合支付分别计入各自方式）
   const payMethodStats = {};
   DB.cares.forEach(c=>{
-    const pm = c.payMethod||'微信现金支付';
-    payMethodStats[pm] = (payMethodStats[pm]||0) + Number(c.payment||0);
+    const total = Number(c.payment||0);
+    const amt2 = Number(c.payment2||0);
+    if(c.payMethod2 && amt2 > 0){
+      const amt1 = total - amt2;
+      const pm1 = c.payMethod||'微信';
+      const pm2 = c.payMethod2;
+      payMethodStats[pm1] = (payMethodStats[pm1]||0) + Math.max(0, amt1);
+      payMethodStats[pm2] = (payMethodStats[pm2]||0) + amt2;
+    } else {
+      const pm = c.payMethod||'微信现金支付';
+      payMethodStats[pm] = (payMethodStats[pm]||0) + total;
+    }
   });
 
   modal(`
@@ -2833,8 +2965,8 @@ async function aiClientReport(){
   const lostClients = DB.clients.filter(c=>calcClientLife(c).status==='流失风险');
   const sleepClients = DB.clients.filter(c=>calcClientLife(c).status==='沉睡');
   const projectRevenue = {};
-  DB.cares.forEach(c=>{ if(c.payMethod==='扣卡') return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
-  const monthIncome = monthCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
+  DB.cares.forEach(c=>{ const inc=careRealIncome(c); if(inc<=0) return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+inc; });
+  const monthIncome = monthCares.reduce((s,c)=>s+careRealIncome(c),0);
 
   const prompt = `请根据以下美容工作室数据生成本月经营建议：
 
@@ -2872,7 +3004,7 @@ function renderBusinessReport(){
 
   // 年度数据
   const yearCares = DB.cares.filter(c=>c.date.startsWith(yearStr));
-  const yearRevenue = yearCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
+  const yearRevenue = yearCares.reduce((s,c)=>s+careRealIncome(c),0);
   const yearNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(yearStr));
   const yearClients = DB.clients.filter(c=>{
     const life = calcClientLife(c);
@@ -2884,7 +3016,7 @@ function renderBusinessReport(){
   for(let m=0;m<12;m++){
     const ms = String(now.getFullYear())+'-'+String(m+1).padStart(2,'0');
     const mc = DB.cares.filter(c=>c.date.startsWith(ms));
-    const rev = mc.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
+    const rev = mc.reduce((s,c)=>s+careRealIncome(c),0);
     const newC = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(ms)).length;
     monthData.push({ month: (m+1)+'月', revenue: rev, visits: mc.length, newClients: newC });
   }
@@ -3119,10 +3251,11 @@ function exportClientsCSV(){
   downloadCSV('客户列表.csv', headers, rows);
 }
 function exportCaresCSV(){
-  const headers = ['日期','客户姓名','项目类型','客户类型','消费金额','支付方式','购买产品','续卡','美甲款式','美睫款式','半永久部位','护理内容','备注'];
+  const headers = ['日期','客户姓名','项目类型','客户类型','消费金额','支付方式','第二支付方式','第二方式金额','购买产品','续卡','美甲款式','美睫款式','半永久部位','护理内容','备注'];
   const rows = DB.cares.map(c=>{
     const client = DB.clients.find(x=>x.id===c.clientId);
     return [c.date, client?(client.name||client.wechatName||''):'', c.projectType||'', c.clientType||'', c.payment||0, c.payMethod||'',
+      c.payMethod2||'', c.payment2||0,
       c.boughtProduct?'是':'', c.renewCard?'是':'', c.nailStyle||'', c.lashStyle||'', c.semiPart||'', c.careContent||'', c.careNote||c.careNote2||''];
   });
   downloadCSV('到店记录.csv', headers, rows);
@@ -3147,12 +3280,12 @@ function exportReportPDF(){
   const now = new Date();
   const yearStr = String(now.getFullYear());
   const yearCares = DB.cares.filter(c=>c.date.startsWith(yearStr));
-  const yearRevenue = yearCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
+  const yearRevenue = yearCares.reduce((s,c)=>s+careRealIncome(c),0);
   const yearNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(yearStr));
   const lostClients = DB.clients.filter(c=>calcClientLife(c).status==='流失风险');
   const sleepClients = DB.clients.filter(c=>calcClientLife(c).status==='沉睡');
   const projectRevenue = {};
-  DB.cares.forEach(c=>{ if(c.payMethod==='扣卡') return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
+  DB.cares.forEach(c=>{ const inc=careRealIncome(c); if(inc<=0) return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+inc; });
   const projectEntries = Object.entries(projectRevenue).sort((a,b)=>b[1]-a[1]);
   const repurchaseClients = DB.clients.filter(c=>calcClientLife(c).visitCount>=2).length;
   const repurchaseRate = DB.clients.length>0 ? Math.round(repurchaseClients/DB.clients.length*100) : 0;
@@ -3220,12 +3353,12 @@ async function aiAnnualSummary(){
   const now = new Date();
   const yearStr = String(now.getFullYear());
   const yearCares = DB.cares.filter(c=>c.date.startsWith(yearStr));
-  const yearRevenue = yearCares.filter(c=>c.payMethod!=='扣卡').reduce((s,c)=>s+Number(c.payment||0),0);
+  const yearRevenue = yearCares.reduce((s,c)=>s+careRealIncome(c),0);
   const yearNewClients = DB.clients.filter(c=>c.firstDate && c.firstDate.startsWith(yearStr));
   const lostClients = DB.clients.filter(c=>calcClientLife(c).status==='流失风险');
   const sleepClients = DB.clients.filter(c=>calcClientLife(c).status==='沉睡');
   const projectRevenue = {};
-  DB.cares.forEach(c=>{ if(c.payMethod==='扣卡') return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+Number(c.payment||0); });
+  DB.cares.forEach(c=>{ const inc=careRealIncome(c); if(inc<=0) return; const pt=c.projectType||'其他'; projectRevenue[pt]=(projectRevenue[pt]||0)+inc; });
   const repurchaseClients = DB.clients.filter(c=>calcClientLife(c).visitCount>=2).length;
   const repurchaseRate = DB.clients.length>0 ? Math.round(repurchaseClients/DB.clients.length*100) : 0;
   const avgTicket = yearCares.length>0 ? Math.round(yearRevenue/yearCares.length) : 0;
