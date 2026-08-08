@@ -824,13 +824,27 @@ function renderStatusOptions(name, current, options){
 function selectedRadio(name){
   return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 }
-/* ---- 英文语音朗读：Web Speech API 深度优化版（纯本地，无网络依赖，永不卡死） ---- */
+/* ---- 英文语音朗读：Web Speech API 深度优化版（慢速清晰，适合英语学习者） ---- */
 let _bestEnVoice = null;
 let _voicesReady = false;
 function pickBestEnVoice(){
   const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
   if(!voices || voices.length === 0) return null;
-  const pref = ['Google US English','Microsoft Aria Online (Natural) - English (United States)','Microsoft Jenny Online (Natural) - English (United States)','Microsoft Guy Online (Natural) - English (United States)','Samantha','Google UK English Female','Microsoft Zira - English (United States)','Karen','Moira','Tessa','Daniel','Alex'];
+  /* 优先选择高质量自然语音 */
+  const pref = [
+    'Google US English',
+    'Microsoft Aria Online (Natural) - English (United States)',
+    'Microsoft Jenny Online (Natural) - English (United States)',
+    'Microsoft Guy Online (Natural) - English (United States)',
+    'Samantha',
+    'Google UK English Female',
+    'Microsoft Zira - English (United States)',
+    'Karen',
+    'Moira',
+    'Tessa',
+    'Daniel',
+    'Alex'
+  ];
   for(const name of pref){ const v = voices.find(v=>v.name === name && v.lang.startsWith('en')); if(v) return v; }
   const enVoices = voices.filter(v=>v.lang && v.lang.startsWith('en'));
   if(enVoices.length === 0) return null;
@@ -848,35 +862,37 @@ if('speechSynthesis' in window){
   setTimeout(initVoices, 2500);
 }
 
-/* 文本切分：短句优先，每段不超过 7 个词，彻底杜绝长句卡顿 */
+/* 文本切分：以完整句子为单位，只在超长句（>15词）时按逗号拆分 */
 function splitForTTS(text){
   const clean = String(text||'').replace(/\s+/g,' ').trim();
   if(!clean) return [];
-  /* 先按句子分割 */
+  /* 按句子分割 */
   const sentences = clean.split(/(?<=[.!?])\s+|[；;]\s*/).map(s=>s.trim()).filter(Boolean);
   const queue = [];
   sentences.forEach(sent=>{
-    /* 再按逗号分割 */
+    const wc = sent.split(' ').length;
+    if(wc <= 15){ queue.push(sent); return; }
+    /* 超长句按逗号拆分 */
     const clauses = sent.split(/,\s*/);
     let buf = '';
     clauses.forEach(clause=>{
       const candidate = buf ? buf + ', ' + clause : clause;
-      if(candidate.split(' ').length > 7 && buf){ queue.push(buf.trim()); buf = clause; }
+      if(candidate.split(' ').length > 12 && buf){ queue.push(buf.trim()); buf = clause; }
       else buf = candidate;
     });
     if(buf.trim()) queue.push(buf.trim());
   });
-  /* 最终保底：超长段按词硬切，每段最多 7 词 */
+  /* 最终保底：超长段按词硬切，每段最多 12 词 */
   const final = [];
   queue.forEach(q=>{
     const words = q.split(' ');
-    if(words.length <= 7){ final.push(q); return; }
-    for(let i=0; i<words.length; i+=7){ final.push(words.slice(i, i+7).join(' ')); }
+    if(words.length <= 12){ final.push(q); return; }
+    for(let i=0; i<words.length; i+=12){ final.push(words.slice(i, i+12).join(' ')); }
   });
   return final;
 }
 
-/* 主朗读函数：纯 Web Speech API，无网络依赖，无弹窗，即点即读 */
+/* 主朗读函数：慢速清晰朗读，适合英语学习者 */
 function speakEnglish(text){
   if(!text) return;
   if(!('speechSynthesis' in window)) return;
@@ -888,14 +904,14 @@ function speakEnglish(text){
   if(!_bestEnVoice){ _bestEnVoice = pickBestEnVoice(); }
   const chunks = splitForTTS(text);
   if(chunks.length === 0) return;
-  /* keepalive：每 10 秒 pause+resume 防止 Chrome 15 秒自动停止 */
+  /* keepalive：每 12 秒 pause+resume 防止 Chrome 自动停止 */
   let keepAlive = setInterval(()=>{
     if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
     if(window.speechSynthesis.speaking){
       window.speechSynthesis.pause();
       window.speechSynthesis.resume();
     }
-  }, 10000);
+  }, 12000);
   let i = 0;
   const speakNext = ()=>{
     if(runId !== window._speakRunId){ clearInterval(keepAlive); return; }
@@ -906,22 +922,23 @@ function speakEnglish(text){
     const wc = chunk.split(' ').length;
     const isQ = /\?\s*$/.test(chunk) || /^(wh|how|do|does|can|could|would|will|is|are|am)\b/i.test(chunk);
     const isE = /!\s*$/.test(chunk);
-    /* 自然语速：疑问句稍慢带升调，感叹句稍快，陈述句中等 */
-    u.rate = isQ ? 0.90 : (isE ? 0.95 : (wc <= 3 ? 0.92 : 0.90));
-    u.pitch = isQ ? 1.06 : (isE ? 1.03 : 1.0);
+    /* 慢速清晰朗读：语速 0.65，疑问句更慢 0.6 带升调 */
+    u.rate = isQ ? 0.60 : (isE ? 0.68 : 0.65);
+    u.pitch = isQ ? 1.08 : (isE ? 1.04 : 1.0);
     u.volume = 1.0;
     if(_bestEnVoice) u.voice = _bestEnVoice;
     else { _bestEnVoice = pickBestEnVoice(); if(_bestEnVoice) u.voice = _bestEnVoice; }
     let done = false;
-    const next = ()=>{ if(done) return; done = true; setTimeout(speakNext, 60); };
+    /* 句子之间停顿 350ms，让学习者有时间消化 */
+    const next = ()=>{ if(done) return; done = true; setTimeout(speakNext, 350); };
     /* 超时保护：防止某个 chunk 卡住不触发 onend */
-    const timer = setTimeout(next, Math.max(3000, Math.ceil(wc * 600 / u.rate)));
+    const timer = setTimeout(next, Math.max(5000, Math.ceil(wc * 900 / u.rate)));
     u.onend = ()=>{ clearTimeout(timer); next(); };
     u.onerror = ()=>{ clearTimeout(timer); next(); };
     window.speechSynthesis.speak(u);
   };
   /* 稍微延迟启动，确保 cancel 完全生效 */
-  setTimeout(speakNext, 50);
+  setTimeout(speakNext, 80);
 }
 function speakLine(en, zh){
   return `<div class="flex items-center justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">

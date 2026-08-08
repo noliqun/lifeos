@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-v38-mixed-payment';
+const CACHE_NAME = 'lifeos-v39-slow-tts';
 const FILES_TO_CACHE = [
   './',
   './index.html',
